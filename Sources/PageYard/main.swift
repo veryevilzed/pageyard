@@ -11,8 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DebugSnapshot.scheduleIfRequested()
         ScreenshotTour.scheduleIfRequested()
+        ZoomTest.scheduleIfRequested()
         DispatchQueue.main.async {
-            if NSDocumentController.shared.documents.isEmpty, ProcessInfo.processInfo.environment["PAGEYARD_SCREENSHOTS"] == nil {
+            if NSDocumentController.shared.documents.isEmpty, ProcessInfo.processInfo.environment["PAGEYARD_SCREENSHOTS"] == nil,
+               ProcessInfo.processInfo.environment["PAGEYARD_ZOOMTEST"] == nil {
                 NSDocumentController.shared.openDocument(nil)
             }
         }

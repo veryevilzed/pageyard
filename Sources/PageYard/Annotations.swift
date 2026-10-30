@@ -11,6 +11,23 @@ enum RenderState {
     static var coversRemovedByRedaction = false
     /// Current zoom of the active view, used to keep selection chrome constant on screen.
     static var viewScale: CGFloat = 1
+
+    private static let offscreenKey = "com.zed.pageyard.offscreen"
+
+    /// True while the current thread renders pages off screen (saving, thumbnails,
+    /// export). On screen, editable objects are drawn by PageOverlayView instead:
+    /// PDFKit rasterises annotation drawing at page resolution, which blurs on zoom.
+    static var isOffscreen: Bool {
+        Thread.current.threadDictionary[offscreenKey] as? Bool ?? false
+    }
+
+    static func offscreen<T>(_ body: () throws -> T) rethrows -> T {
+        let dict = Thread.current.threadDictionary
+        let previous = dict[offscreenKey]
+        dict[offscreenKey] = true
+        defer { dict[offscreenKey] = previous }
+        return try body()
+    }
 }
 
 extension NSFont {
@@ -48,10 +65,17 @@ class EditableAnnotation: PDFAnnotation {
     func drawContent(in rect: CGRect) {}
 
     override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        // On screen the page overlay draws us crisply at any zoom.
+        guard RenderState.isOffscreen || RenderState.isFlattening else { return }
+        render(in: context)
+    }
+
+    /// Draws the object in page space into `context`.
+    func render(in context: CGContext) {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
         if !isEditing { drawContent(in: bounds) }
-        if isSelected && !RenderState.isFlattening { drawSelectionChrome() }
+        if isSelected && !RenderState.isFlattening && !RenderState.isOffscreen { drawSelectionChrome() }
         NSGraphicsContext.restoreGraphicsState()
     }
 

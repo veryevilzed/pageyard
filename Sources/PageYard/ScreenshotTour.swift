@@ -234,6 +234,10 @@ enum ScreenshotTour {
         ctx.strokePath()
     }
 
+    static func demoFormData() -> Data { demoForm() }
+
+    static func capture(_ window: NSWindow, to url: URL) { save(window, extra: [], to: url) }
+
     private static func demoForm() -> Data {
         pdf(pages: [
             { ctx in
@@ -336,6 +340,74 @@ enum ScreenshotTour {
                 p.fill()
             }
             return true
+        }
+    }
+}
+
+/// `PAGEYARD_ZOOMTEST=<dir>`: diagnostics for text editing / rendering at high zoom.
+enum ZoomTest {
+    static func click(_ view: EditorPDFView, page: PDFPage, at p: CGPoint, count: Int) {
+        guard let window = view.window else { return }
+        let loc = view.convert(view.convert(p, from: page), to: nil)
+        func ev(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: loc, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: count, pressure: 1)!
+        }
+        view.mouseDown(with: ev(.leftMouseDown))
+        view.mouseUp(with: ev(.leftMouseUp))
+    }
+
+    static func scheduleIfRequested() {
+        guard let dir = ProcessInfo.processInfo.environment["PAGEYARD_ZOOMTEST"] else { return }
+        let out = URL(fileURLWithPath: dir)
+        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("zoomtest.pdf")
+        try? ScreenshotTour.demoFormData().write(to: file)
+        NSDocumentController.shared.openDocument(withContentsOf: file, display: true) { doc, _, _ in
+            guard let wc = doc?.windowControllers.first as? EditorWindowController, let window = wc.window,
+                  let page = wc.pdfView.document?.page(at: 0) else { exit(1) }
+            let view = wc.pdfView
+            window.setFrame(NSRect(x: 80, y: 80, width: 1200, height: 800), display: true)
+            view.mode = .fill
+            view.autoScales = false
+            view.scaleFactor = 3
+            let tb = view.makeTextBox(on: page, at: CGPoint(x: 230, y: 703), snap: true)
+            tb.text = "Готовый текст"
+            tb.fit()
+            view.add(tb, to: page, name: "t")
+            view.go(to: CGRect(x: 180, y: 600, width: 200, height: 150), on: page)
+            let typing = view.makeTextBox(on: page, at: CGPoint(x: 230, y: 673), snap: true)
+            page.addAnnotation(typing)
+            view.beginEditing(typing, isNew: true)
+            if let tv = window.firstResponder as? NSTextView {
+                tv.string = "Ввод текста"
+                view.textDidChange(Notification(name: NSText.didChangeNotification))
+                let doc = view.documentView!
+                let pageRect = view.convert(CGRect(x: 0, y: 0, width: 100, height: 100), from: page)
+                let docRect = doc.convert(pageRect, from: view)
+                print("scaleFactor \(view.scaleFactor); 100pt → view \(pageRect.width), → doc \(docRect.width)")
+                print("doc bounds \(doc.bounds.size) frame \(doc.frame.size); editor font \(tv.font?.pointSize ?? 0), frame \(tv.frame.size)")
+                print("scroll magnification \(doc.enclosingScrollView?.magnification ?? -1)"); fflush(stdout)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                ScreenshotTour.capture(window, to: out.appendingPathComponent("zoom.png"))
+                view.finishEditing()
+
+                // Native form fields: the click must be routed to PDFKit (not checked
+                // here: PDFKit tracks the real mouse after a synthetic mouseDown).
+                func boxes() -> Int { page.annotations.filter { $0 is TextBoxAnnotation }.count }
+
+                // Double-click on a detected line in Select starts typing there.
+                view.activate(.select)
+                let before = boxes()
+                click(view, page: page, at: CGPoint(x: 300, y: 583), count: 2)
+                let editing = window.firstResponder is NSTextView
+                if let tv = window.firstResponder as? NSTextView { tv.insertText("x", replacementRange: tv.selectedRange()) }
+                view.finishEditing()
+                print("double-click on line: editing \(editing), new text boxes \(boxes() - before) (expected true, 1)")
+                fflush(stdout)
+                exit(0)
+            }
         }
     }
 }

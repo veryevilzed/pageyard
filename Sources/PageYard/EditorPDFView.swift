@@ -99,7 +99,7 @@ protocol EditorPDFViewDelegate: AnyObject {
     func editorMarksVisibilityChanged(_ visible: Bool)
 }
 
-final class EditorPDFView: PDFView, NSTextViewDelegate {
+final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvider {
     weak var editorDelegate: EditorPDFViewDelegate?
     let detector = FieldDetector()
 
@@ -183,6 +183,7 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
     override init(frame: NSRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
+        pageOverlayViewProvider = self
         NotificationCenter.default.addObserver(self, selector: #selector(scaleChanged(_:)),
                                                name: .PDFViewScaleChanged, object: self)
     }
@@ -241,8 +242,33 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
 
     private func refresh(page: PDFPage) {
         annotationsChanged(on: page)
+        overlays.object(forKey: page)?.needsDisplay = true
         needsDisplay = true
         NotificationCenter.default.post(name: .editorPageChanged, object: page)
+    }
+
+    // MARK: - Page overlays
+
+    private let overlays = NSMapTable<PDFPage, PageOverlayView>.weakToWeakObjects()
+
+    func pdfView(_ view: PDFView, overlayViewFor page: PDFPage) -> NSView? {
+        let overlay = PageOverlayView()
+        overlay.pdfView = self
+        overlay.page = page
+        overlays.setObject(overlay, forKey: page)
+        return overlay
+    }
+
+    func pdfView(_ pdfView: PDFView, willEndDisplayingOverlayView overlayView: NSView, for page: PDFPage) {
+        overlays.removeObject(forKey: page)
+    }
+
+    /// Document-view units per page point. The scroll view magnifies the
+    /// document view, so this is usually 1 regardless of zoom.
+    private func documentScale(for page: PDFPage) -> CGFloat {
+        guard let doc = documentView else { return scaleFactor }
+        let r = doc.convert(convert(CGRect(x: 0, y: 0, width: 100, height: 100), from: page), from: self)
+        return max(0.01, r.width / 100)
     }
 
     // MARK: - Placement (shared by UI and self-test)
@@ -357,6 +383,12 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
             .first { $0.bounds.insetBy(dx: -tol, dy: -tol).contains(p) }
     }
 
+    private func detectedFieldAt(_ p: CGPoint, on page: PDFPage) -> Bool {
+        let fields = detector.fields(on: page)
+        return FieldDetector.box(containing: p, in: fields, kinds: [.box]) != nil
+            || FieldDetector.line(near: p, in: fields) != nil
+    }
+
     private func isOnHandle(_ a: EditableAnnotation, viewPoint vp: CGPoint) -> Bool {
         guard let page = a.page else { return false }
         let corner = convert(CGPoint(x: a.bounds.maxX, y: a.bounds.minY), from: page)
@@ -371,6 +403,12 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
 
         if let s = selected, s.page === page, isOnHandle(s, viewPoint: vp) {
             drag = .resize(s, p, s.state)
+            return
+        }
+        // Native form fields are PDFKit's, whatever tool is active.
+        if hitAnnotation(on: page, at: p) == nil, let w = page.annotation(at: p), w.type == "Widget" {
+            selected = nil
+            super.mouseDown(with: event)
             return
         }
         if let hit = hitAnnotation(on: page, at: p) {
@@ -390,6 +428,14 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
 
         switch tool {
         case .select:
+            // Double-click on a detected line / cell starts typing there.
+            if event.clickCount >= 2, detectedFieldAt(p, on: page) {
+                clearSelection()
+                let tb = makeTextBox(on: page, at: p, snap: true)
+                page.addAnnotation(tb)
+                beginEditing(tb, isNew: true)
+                return
+            }
             super.mouseDown(with: event)
         case .text:
             // Decided on mouse-up: a click places text, a drag draws an area.
@@ -546,7 +592,9 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
 
     override func mouseMoved(with event: NSEvent) {
         guard mode != .view, let (page, p, vp) = locate(event) else { super.mouseMoved(with: event); return }
-        if let s = selected, s.page === page, isOnHandle(s, viewPoint: vp) {
+        if hitAnnotation(on: page, at: p) == nil, page.annotation(at: p)?.type == "Widget" {
+            super.mouseMoved(with: event)
+        } else if let s = selected, s.page === page, isOnHandle(s, viewPoint: vp) {
             NSCursor.crosshair.set()
         } else if hitAnnotation(on: page, at: p) != nil {
             NSCursor.openHand.set()
@@ -674,7 +722,8 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
         tv.isAutomaticTextReplacementEnabled = false
         tv.textContainer?.lineFragmentPadding = 0
         tv.textContainer?.widthTracksTextView = false
-        tv.textContainer?.containerSize = NSSize(width: tb.wrapWidth.map { max(4, ($0 - 2 * TextBoxAnnotation.padding) * scaleFactor) } ?? 1e6,
+        let k = tb.page.map(documentScale(for:)) ?? 1
+        tv.textContainer?.containerSize = NSSize(width: tb.wrapWidth.map { max(4, ($0 - 2 * TextBoxAnnotation.padding) * k) } ?? 1e6,
                                                  height: 1e6)
         tv.isHorizontallyResizable = false
         tv.isVerticallyResizable = false
@@ -691,7 +740,9 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
     }
 
     private func styleEditor(_ tv: NSTextView, for tb: TextBoxAnnotation) {
-        let s = scaleFactor
+        let s = tb.page.map(documentScale(for:)) ?? 1
+        // The border is magnified with the document; keep it one screen pixel wide.
+        tv.layer?.borderWidth = s / max(scaleFactor, 0.05)
         let font = tb.textFont.sized(tb.textFont.pointSize * s)
         tv.font = font
         tv.textColor = tb.ink
@@ -705,7 +756,7 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
 
     private func layoutEditor() {
         guard let tv = editor, let tb = editing, let page = tb.page, let doc = documentView else { return }
-        let s = scaleFactor
+        let s = documentScale(for: page)
         tb.text = tv.string
         let ts = tb.textSize()
         let topLeft = CGPoint(x: tb.bounds.minX, y: tb.bounds.maxY - tb.textTopInset)

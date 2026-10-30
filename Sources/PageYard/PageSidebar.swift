@@ -439,7 +439,7 @@ final class PageSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate,
     private func thumbnail(_ page: PDFPage) -> NSImage {
         let key = ObjectIdentifier(page)
         if let t = thumbs[key] { return t }
-        let t = page.thumbnail(of: CGSize(width: 240, height: 300), for: .cropBox)
+        let t = RenderState.offscreen { page.thumbnail(of: CGSize(width: 240, height: 300), for: .cropBox) }
         thumbs[key] = t
         return t
     }

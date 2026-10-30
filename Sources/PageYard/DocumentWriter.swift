@@ -13,6 +13,10 @@ enum DocumentWriter {
     }
 
     static func bake(_ doc: PDFDocument, password: String?) -> Report {
+        RenderState.offscreen { bakeOffscreen(doc, password: password) }
+    }
+
+    private static func bakeOffscreen(_ doc: PDFDocument, password: String?) -> Report {
         // Take our own objects off the pages so PDFKit's serialisation only
         // contains the original document plus native form values.
         var own: [[PDFAnnotation]] = []
