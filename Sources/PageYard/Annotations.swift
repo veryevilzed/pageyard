@@ -299,19 +299,45 @@ final class HintAnnotation: PDFAnnotation {
 
 /// Yellow marker over a block, optionally with a note. Saved as a native PDF
 /// highlight annotation (not baked), so it can be hidden in any viewer.
+///
+/// The note label sits above the block *inside* the annotation bounds:
+/// PDFKit clips annotation drawing to its bounds.
 final class HighlightAnnotation: EditableAnnotation {
     static let defaultColor = NSColor(srgbRed: 1, green: 0.86, blue: 0.1, alpha: 1)
+    private static let noteAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 7.5), .foregroundColor: NSColor.black,
+    ]
 
     var note: String
     var ink: NSColor = HighlightAnnotation.defaultColor
     var isMarkHidden = false
 
-    init(rect: CGRect, note: String = "") {
+    init(rect block: CGRect, note: String = "") {
         self.note = note
-        super.init(rect: rect)
+        super.init(rect: block)
+        bounds = Self.bounds(forBlock: block, note: note)
     }
 
     required init?(coder: NSCoder) { nil }
+
+    /// Height of the note label for a block of the given width (0 without a note).
+    static func noteHeight(_ note: String, width: CGFloat) -> CGFloat {
+        guard !note.isEmpty else { return 0 }
+        let r = (note as NSString).boundingRect(with: CGSize(width: max(20, width - 8), height: 200),
+                                                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                                attributes: noteAttributes)
+        return min(ceil(r.height), 60) + 6
+    }
+
+    static func bounds(forBlock block: CGRect, note: String) -> CGRect {
+        CGRect(x: block.minX, y: block.minY, width: block.width, height: block.height + noteHeight(note, width: block.width))
+    }
+
+    /// The highlighted area itself (bounds minus the note label).
+    var blockRect: CGRect {
+        let h = Self.noteHeight(note, width: bounds.width)
+        return CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: max(1, bounds.height - h))
+    }
 
     override var state: [String: Any] {
         get { var s = super.state; s["note"] = note; return s }
@@ -320,21 +346,19 @@ final class HighlightAnnotation: EditableAnnotation {
 
     override func drawContent(in rect: CGRect) {
         guard !isMarkHidden, let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let block = blockRect
         ctx.saveGState()
         ctx.setBlendMode(.multiply)
         ctx.setFillColor(ink.withAlphaComponent(0.45).cgColor)
-        ctx.fill(rect)
+        ctx.fill(block)
         ctx.restoreGState()
         guard !note.isEmpty else { return }
 
-        // Callout with the note text just above the block.
-        let font = NSFont.systemFont(ofSize: 7.5)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
-        let maxW = max(80, min(220, rect.width))
         let text = note as NSString
-        let size = text.boundingRect(with: CGSize(width: maxW, height: 200),
-                                     options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs).size
-        let box = CGRect(x: rect.minX, y: rect.maxY + 1, width: ceil(size.width) + 8, height: min(ceil(size.height), 60) + 5)
+        let used = text.boundingRect(with: CGSize(width: max(20, rect.width - 8), height: 200),
+                                     options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: Self.noteAttributes)
+        let box = CGRect(x: rect.minX, y: block.maxY + 1,
+                         width: min(rect.width, ceil(used.width) + 8), height: rect.maxY - block.maxY - 1)
         let path = NSBezierPath(roundedRect: box, xRadius: 2.5, yRadius: 2.5)
         NSColor(srgbRed: 1, green: 0.95, blue: 0.6, alpha: 0.97).setFill()
         path.fill()
@@ -342,6 +366,6 @@ final class HighlightAnnotation: EditableAnnotation {
         path.lineWidth = 0.5
         path.stroke()
         text.draw(with: box.insetBy(dx: 4, dy: 2.5), options: [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine],
-                  attributes: attrs)
+                  attributes: Self.noteAttributes)
     }
 }

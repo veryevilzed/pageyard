@@ -328,7 +328,10 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
         }
 
         let pad = TextBoxAnnotation.padding
-        let coverRect = b.insetBy(dx: -pad, dy: -1)
+        // PDFKit's line bounds can stop short of the last glyph; extend the
+        // cover to the right so no original pixels peek out.
+        var coverRect = b.insetBy(dx: -pad, dy: -1)
+        coverRect.size.width += b.height / CGFloat(max(1, text.components(separatedBy: .newlines).count)) * 0.4
         let tb = TextBoxAnnotation(text: text, font: font, color: color,
                                    topLeft: CGPoint(x: coverRect.minX, y: coverRect.maxY))
         tb.cover = coverRect.size
@@ -860,6 +863,7 @@ final class EditorPDFView: PDFView, NSTextViewDelegate {
             } else if text != h.note {
                 var st = h.state
                 st["note"] = text
+                st["bounds"] = HighlightAnnotation.bounds(forBlock: h.blockRect, note: text)
                 self.apply(st, to: h, name: "Заметка")
             }
             self.window?.makeFirstResponder(self)

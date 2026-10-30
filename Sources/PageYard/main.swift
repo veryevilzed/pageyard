@@ -10,8 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DebugSnapshot.scheduleIfRequested()
+        ScreenshotTour.scheduleIfRequested()
         DispatchQueue.main.async {
-            if NSDocumentController.shared.documents.isEmpty {
+            if NSDocumentController.shared.documents.isEmpty, ProcessInfo.processInfo.environment["PAGEYARD_SCREENSHOTS"] == nil {
                 NSDocumentController.shared.openDocument(nil)
             }
         }

@@ -65,6 +65,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         window.toolbar = toolbar
         window.toolbarStyle = .unified
         window.center()
+        // Keyboard focus starts on the page (tool shortcuts), not the font size box.
+        window.initialFirstResponder = pdfView
 
         let nc = NotificationCenter.default
         nc.addObserver(self, selector: #selector(signaturesChanged), name: SignatureStore.changed, object: nil)
@@ -171,6 +173,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         sizeBox.action = #selector(sizeChanged(_:))
         sizeBox.delegate = self
         sizeBox.toolTip = "Размер шрифта"
+        // No inline predictions / completions in a number field.
+        sizeBox.isAutomaticTextCompletionEnabled = false
         sizeBox.widthAnchor.constraint(equalToConstant: 64).isActive = true
 
         colorWell.color = .black

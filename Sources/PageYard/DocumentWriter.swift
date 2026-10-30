@@ -89,7 +89,7 @@ enum DocumentWriter {
             ctx.concatenate(transform)
             for case let a as EditableAnnotation in own[i] {
                 if let h = a as? HighlightAnnotation {
-                    markers.append((i, h.bounds.applying(transform), h.note, h.isMarkHidden))
+                    markers.append((i, h.blockRect.applying(transform), h.note, h.isMarkHidden))
                     continue
                 }
                 a.draw(with: .cropBox, in: ctx)
