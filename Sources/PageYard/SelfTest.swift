@@ -132,6 +132,26 @@ enum SelfTest {
         case nil: print("rtf → pdf: no result")
         }
 
+        // Copies of every object kind keep their look.
+        let kinds: [EditableAnnotation] = [t1, m, mark, area]
+        let copies = kinds.map { $0.duplicate() }
+        var sameLook = true
+        for (a, c) in zip(kinds, copies) {
+            let sameClass = String(describing: Swift.type(of: a)) == String(describing: Swift.type(of: c))
+            let width: CGFloat = abs(a.bounds.width - c.bounds.width)
+            if !sameClass || width > 0.5 || c.page != nil { sameLook = false }
+        }
+        print("duplicates keep look: \(sameLook), copied text: \((copies[0] as? TextBoxAnnotation)?.text ?? "-")")
+
+        // Clean export: original content only, no objects or markup.
+        if let clean = DocumentWriter.withoutAnnotations(doc).flatMap(PDFDocument.init(data:)) {
+            let text = clean.page(at: 0)?.string ?? ""
+            let markup = (0..<clean.pageCount).flatMap { clean.page(at: $0)?.annotations ?? [] }
+                .filter { DocumentWriter.markupTypes.contains($0.type ?? "") }
+            print("clean export: pages \(clean.pageCount)/\(doc.pageCount), original text kept \(text.contains("123")), added text absent \(!text.contains("Иванов")), markup \(markup.count)")
+            print("objects restored after clean export: \(page.annotations.contains { $0 === t1 })")
+        }
+
         let report = DocumentWriter.bake(doc, password: nil)
         if let e = report.redactionError { print("REDACTION ERROR: \(e)") }
         let outURL = dir.appendingPathComponent("out.pdf")

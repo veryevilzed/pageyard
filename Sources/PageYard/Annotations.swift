@@ -393,3 +393,56 @@ final class HighlightAnnotation: EditableAnnotation {
                   attributes: Self.noteAttributes)
     }
 }
+
+// MARK: - Copies (clipboard, duplicate)
+
+extension EditableAnnotation {
+    /// An independent copy with the same look, not attached to any page.
+    @objc func duplicate() -> EditableAnnotation {
+        let c = EditableAnnotation(rect: bounds)
+        c.state = state
+        return c
+    }
+}
+
+extension TextBoxAnnotation {
+    override func duplicate() -> EditableAnnotation {
+        let c = TextBoxAnnotation(text: text, font: textFont, color: ink, topLeft: CGPoint(x: bounds.minX, y: bounds.maxY))
+        c.state = state
+        c.coverColor = coverColor
+        // A replacement of original text is tied to its place; a copy is plain text.
+        if redactionRect != nil {
+            c.cover = nil
+        }
+        c.fit()
+        return c
+    }
+}
+
+extension MarkAnnotation {
+    override func duplicate() -> EditableAnnotation {
+        MarkAnnotation(kind: kind, color: ink, rect: bounds)
+    }
+}
+
+extension ImageAnnotation {
+    override func duplicate() -> EditableAnnotation {
+        ImageAnnotation(image: image, rect: bounds)
+    }
+}
+
+extension WhiteoutAnnotation {
+    override func duplicate() -> EditableAnnotation {
+        let c = WhiteoutAnnotation(rect: bounds)
+        c.ink = ink
+        return c
+    }
+}
+
+extension HighlightAnnotation {
+    override func duplicate() -> EditableAnnotation {
+        let c = HighlightAnnotation(rect: blockRect, note: note)
+        c.ink = ink
+        return c
+    }
+}

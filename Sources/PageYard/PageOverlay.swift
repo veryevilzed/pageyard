@@ -25,6 +25,25 @@ final class PageOverlayView: NSView {
         guard let page, let ctx = NSGraphicsContext.current?.cgContext, let t = pageTransform() else { return }
         ctx.saveGState()
         ctx.concatenate(t)
+        if let editor = pdfView as? EditorPDFView {
+            // A translated page is dimmed and the translated blocks stand out
+            // as white cards (like Live Text translation), below the user's objects.
+            let blocks = editor.translationBlocks(on: page)
+            if !blocks.isEmpty {
+                NSColor.black.withAlphaComponent(0.45).setFill()
+                page.bounds(for: .cropBox).fill(using: .sourceOver)
+                for block in blocks { block.draw() }
+            }
+            if let r = editor.marquee(on: page) {
+                NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+                r.fill()
+                let frame = NSBezierPath(rect: r)
+                frame.lineWidth = 1 / max(editor.scaleFactor, 0.05)
+                frame.setLineDash([4 / max(editor.scaleFactor, 0.05), 3 / max(editor.scaleFactor, 0.05)], count: 2, phase: 0)
+                NSColor.controlAccentColor.setStroke()
+                frame.stroke()
+            }
+        }
         for case let a as EditableAnnotation in page.annotations {
             a.render(in: ctx)
         }

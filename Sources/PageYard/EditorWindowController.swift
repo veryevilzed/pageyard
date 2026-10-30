@@ -5,6 +5,7 @@ private extension NSToolbarItem.Identifier {
     static let sidebar = Self("sidebar")
     static let mode = Self("mode")
     static let marks = Self("marks")
+    static let translate = Self("translate")
     static let zoom = Self("zoom")
 }
 
@@ -19,6 +20,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     private let placeholder = NSStackView()
     private let strip = NSVisualEffectView()
     private static let stripHeight: CGFloat = 40
+    private let translationBar = NSVisualEffectView()
+    private static let translationBarHeight: CGFloat = 36
+    private var translateButton: NSButton?
+    private let trSource = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let trTarget = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let trScope = NSSegmentedControl(labels: ["Вся страница", "Выделенное"], trackingMode: .selectOne, target: nil, action: nil)
+    private let trStatus = NSTextField(labelWithString: "")
+    private let trSpinner = NSProgressIndicator()
 
     private var modeControl: NSSegmentedControl!
     private var marksButton: NSButton!
@@ -56,6 +65,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
 
         buildContent(in: window)
         buildStrip()
+        buildTranslationBar()
 
         let toolbar = NSToolbar(identifier: "EditorToolbar2")
         toolbar.delegate = self
@@ -142,10 +152,149 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     }
 
     private func setStripVisible(_ visible: Bool) {
-        guard let root = window?.contentView else { return }
         strip.isHidden = !visible
-        let h = visible ? root.bounds.height - Self.stripHeight : root.bounds.height
-        split.frame = NSRect(x: 0, y: 0, width: root.bounds.width, height: h)
+        relayoutRows()
+    }
+
+    /// Stacks the tool strip and the translation bar under the toolbar.
+    private func relayoutRows() {
+        guard let root = window?.contentView else { return }
+        var top = root.bounds.height
+        if !strip.isHidden {
+            top -= Self.stripHeight
+            strip.frame = NSRect(x: 0, y: top, width: root.bounds.width, height: Self.stripHeight)
+        }
+        if !translationBar.isHidden {
+            top -= Self.translationBarHeight
+            translationBar.frame = NSRect(x: 0, y: top, width: root.bounds.width, height: Self.translationBarHeight)
+        }
+        split.frame = NSRect(x: 0, y: 0, width: root.bounds.width, height: top)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        relayoutRows()
+    }
+
+    // MARK: - Translation bar
+
+    private func buildTranslationBar() {
+        guard let root = window?.contentView else { return }
+        translationBar.material = .headerView
+        translationBar.blendingMode = .withinWindow
+        translationBar.autoresizingMask = [.width, .minYMargin]
+        translationBar.isHidden = true
+        root.addSubview(translationBar)
+        let line = NSBox(frame: NSRect(x: 0, y: 0, width: 4000, height: 1))
+        line.boxType = .separator
+        line.autoresizingMask = [.width, .maxYMargin]
+        translationBar.addSubview(line)
+
+        trSource.addItem(withTitle: "Определить")
+        trSource.lastItem?.representedObject = "auto"
+        for (id, title) in TranslationSettings.languages {
+            trSource.addItem(withTitle: title)
+            trSource.lastItem?.representedObject = id
+            trTarget.addItem(withTitle: title)
+            trTarget.lastItem?.representedObject = id
+        }
+        trSource.selectItem(at: trSource.itemArray.firstIndex { $0.representedObject as? String == TranslationSettings.sourceLanguage } ?? 0)
+        trTarget.selectItem(at: trTarget.itemArray.firstIndex { $0.representedObject as? String == TranslationSettings.targetLanguage } ?? 0)
+        for p in [trSource, trTarget] {
+            p.target = self
+            p.action = #selector(languagesChanged)
+        }
+        trScope.target = self
+        trScope.action = #selector(scopeChanged)
+        trScope.selectedSegment = UserDefaults.standard.integer(forKey: "trScope")
+        trScope.setToolTip("Переводить текущую страницу целиком (и следующие при перелистывании)", forSegment: 0)
+        trScope.setToolTip("Протяните рамку инструментом «Выбор» — переведётся только она", forSegment: 1)
+        trStatus.textColor = .secondaryLabelColor
+        trStatus.font = .systemFont(ofSize: 11)
+        trStatus.lineBreakMode = .byTruncatingTail
+        trStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        trSpinner.style = .spinning
+        trSpinner.controlSize = .small
+        trSpinner.isDisplayedWhenStopped = false
+
+        let icon = NSImageView(image: symbol("translate", "Перевод"))
+        icon.contentTintColor = .controlAccentColor
+        let again = NSButton(title: "Перевести заново", target: self, action: #selector(retranslatePage))
+        again.toolTip = "Перевести текущую страницу ещё раз"
+        let bake = NSButton(title: "В документ", target: self, action: #selector(moveTranslationIntoDocument))
+        bake.toolTip = "Перенести перевод этой страницы в документ: текст заменит оригинал и сохранится в файле"
+        let settings = NSButton(title: "Ключи и модель…", target: self, action: #selector(showSettings(_:)))
+        for b in [again, bake, settings] { b.bezelStyle = .rounded; b.controlSize = .small }
+        let from = NSTextField(labelWithString: "с")
+        let to = NSTextField(labelWithString: "на")
+        [from, to].forEach { $0.textColor = .secondaryLabelColor }
+        for p in [trSource, trTarget] { p.controlSize = .small }
+        trScope.controlSize = .small
+
+        let stack = NSStackView(views: [icon, from, trSource, to, trTarget, trScope, again, bake, trSpinner, trStatus, settings])
+        stack.spacing = 8
+        stack.setCustomSpacing(16, after: trTarget)
+        stack.setCustomSpacing(16, after: trScope)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        translationBar.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: translationBar.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: translationBar.trailingAnchor, constant: -12),
+            stack.centerYAnchor.constraint(equalTo: translationBar.centerYAnchor),
+        ])
+
+        pdfView.translationScope = EditorPDFView.TranslationScope(rawValue: trScope.selectedSegment) ?? .page
+        pdfView.onTranslationStatus = { [weak self] text in
+            guard let self else { return }
+            self.trStatus.textColor = .secondaryLabelColor
+            self.trStatus.stringValue = text ?? ""
+            self.trStatus.toolTip = text
+            text == nil ? self.trSpinner.stopAnimation(nil) : self.trSpinner.startAnimation(nil)
+        }
+        // Errors stay in the bar (no modal alerts while reading).
+        pdfView.onTranslationError = { [weak self] message in
+            guard let self else { return }
+            self.trSpinner.stopAnimation(nil)
+            self.trStatus.textColor = .systemRed
+            self.trStatus.stringValue = message
+            self.trStatus.toolTip = message
+        }
+    }
+
+    @objc func toggleTranslation(_ sender: Any?) {
+        pdfView.translationOn.toggle()
+        translationBar.isHidden = !pdfView.translationOn
+        translateButton?.state = pdfView.translationOn ? .on : .off
+        relayoutRows()
+        if pdfView.translationOn, TranslationSettings.apiKey(TranslationSettings.provider) == nil {
+            trStatus.stringValue = "Укажите ключ API в настройках (⌘,)"
+        }
+    }
+
+    @objc private func languagesChanged() {
+        TranslationSettings.sourceLanguage = trSource.selectedItem?.representedObject as? String ?? "auto"
+        TranslationSettings.targetLanguage = trTarget.selectedItem?.representedObject as? String ?? "Russian"
+        pdfView.resetTranslations()
+    }
+
+    @objc private func scopeChanged() {
+        UserDefaults.standard.set(trScope.selectedSegment, forKey: "trScope")
+        pdfView.translationScope = EditorPDFView.TranslationScope(rawValue: trScope.selectedSegment) ?? .page
+        if pdfView.translationScope == .selection { pdfView.activate(.select) }
+    }
+
+    @objc private func retranslatePage() {
+        guard let page = pdfView.currentPage else { return }
+        pdfView.translate(page: page, area: nil)
+    }
+
+    @objc private func moveTranslationIntoDocument() {
+        guard let page = pdfView.currentPage else { return }
+        if pdfView.mode == .view { pdfView.mode = .edit }
+        pdfView.moveTranslationIntoDocument(page: page)
+    }
+
+    @objc func showSettings(_ sender: Any?) {
+        SettingsWindowController.shared.show()
     }
 
     private func symbol(_ name: String, _ label: String) -> NSImage {
@@ -246,7 +395,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     // MARK: - Top toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.sidebar, .flexibleSpace, .mode, .flexibleSpace, .marks, .zoom]
+        [.sidebar, .flexibleSpace, .mode, .flexibleSpace, .translate, .marks, .zoom]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -265,6 +414,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             modeControl = c
             item.view = c
             item.label = "Режим"
+        case .translate:
+            let b = NSButton(image: symbol("translate", "Перевод"), target: self, action: #selector(toggleTranslation(_:)))
+            b.setButtonType(.pushOnPushOff)
+            b.bezelStyle = .texturedRounded
+            b.toolTip = "Перевод страницы поверх оригинала (⌘⇧T)"
+            translateButton = b
+            item.view = b
+            item.label = "Перевод"
         case .marks:
             let b = NSButton(image: symbol("eye", "Пометки"), target: self, action: #selector(toggleMarks(_:)))
             b.bezelStyle = .texturedRounded
@@ -441,6 +598,26 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         exportImages(of: nil)
     }
 
+    @objc func exportWithoutAnnotations(_ sender: Any?) {
+        guard let window, let pdf = pdfView.document, pdf.pageCount > 0 else { NSSound.beep(); return }
+        commitPendingEdits()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        let base = (editorDocument?.displayName as NSString?)?.deletingPathExtension ?? "Документ"
+        panel.nameFieldStringValue = "\(base) (без аннотаций).pdf"
+        panel.message = "Копия без добавленного текста, подписей, отметок, маркеров и комментариев исходного файла"
+        panel.beginSheetModal(for: window) { r in
+            guard r == .OK, let url = panel.url else { return }
+            guard let data = DocumentWriter.withoutAnnotations(pdf) else { NSSound.beep(); return }
+            do {
+                try data.write(to: url)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                NSAlert(error: error).beginSheetModal(for: window)
+            }
+        }
+    }
+
     @objc func exportCurrentPageImage(_ sender: Any?) {
         guard let page = pdfView.currentPage else { NSSound.beep(); return }
         exportImages(of: [page])
@@ -478,16 +655,19 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         scopeStack.alignment = .leading
         scopeStack.spacing = 4
         let single = NSTextField(labelWithString: pages.map { $0.count == 1 ? "Страница \(pdf.index(for: $0[0]) + 1)" : "Страниц: \($0.count)" } ?? "")
+        let clean = NSButton(checkboxWithTitle: "Без аннотаций (только исходные страницы)", target: nil, action: nil)
+        clean.state = defaults.bool(forKey: "exportClean") ? .on : .off
         let grid = NSGridView(views: [
             [NSTextField(labelWithString: "Формат:"), format],
             [NSTextField(labelWithString: "Разрешение:"), dpi],
             [NSTextField(labelWithString: "Страницы:"), pages == nil ? scopeStack : single],
+            [NSGridCell.emptyContentView, clean],
         ])
         grid.rowSpacing = 8
         grid.columnSpacing = 8
         grid.column(at: 0).xPlacement = .trailing
         grid.row(at: 2).yPlacement = .top
-        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: pages == nil ? 150 : 96))
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: pages == nil ? 180 : 126))
         grid.frame = accessory.bounds.insetBy(dx: 10, dy: 8)
         accessory.addSubview(grid)
 
@@ -517,7 +697,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
                 chosen = all
             }
             self.commitPendingEdits()
-            let baked = PDFDocument(data: DocumentWriter.bake(pdf, password: self.editorDocument?.password).data)
+            defaults.set(clean.state == .on, forKey: "exportClean")
+            let source = clean.state == .on
+                ? DocumentWriter.withoutAnnotations(pdf)
+                : DocumentWriter.bake(pdf, password: self.editorDocument?.password).data
+            let baked = source.flatMap(PDFDocument.init(data:))
             let list = chosen.compactMap { p -> (page: PDFPage, number: Int)? in
                 let i = pdf.index(for: p)
                 guard let bp = baked?.page(at: i) else { return nil }
@@ -650,10 +834,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         case #selector(toggleHints(_:)):
             item.state = pdfView.showsFieldHints ? .on : .off
             return true
+        case #selector(toggleTranslation(_:)):
+            item.state = pdfView.translationOn ? .on : .off
+            return true
         case #selector(toggleMarks(_:)):
             item.state = pdfView.marksVisible ? .on : .off
             return true
-        case #selector(exportPageImages(_:)), #selector(exportCurrentPageImage(_:)):
+        case #selector(exportPageImages(_:)), #selector(exportCurrentPageImage(_:)), #selector(exportWithoutAnnotations(_:)):
             return (pdfView.document?.pageCount ?? 0) > 0
         default:
             return true

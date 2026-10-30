@@ -405,6 +405,94 @@ enum ZoomTest {
                 if let tv = window.firstResponder as? NSTextView { tv.insertText("x", replacementRange: tv.selectedRange()) }
                 view.finishEditing()
                 print("double-click on line: editing \(editing), new text boxes \(boxes() - before) (expected true, 1)")
+
+                // Copy / paste through the real pasteboard; the user's clipboard is restored after.
+                let pb = NSPasteboard.general
+                let saved = (pb.pasteboardItems ?? []).map { item -> NSPasteboardItem in
+                    let copy = NSPasteboardItem()
+                    for t in item.types { if let d = item.data(forType: t) { copy.setData(d, forType: t) } }
+                    return copy
+                }
+                view.activate(.select)
+                click(view, page: page, at: CGPoint(x: 260, y: 706), count: 1)   // "Готовый текст"
+                let n0 = boxes()
+                view.copy(nil)
+                view.paste(nil)
+                view.paste(nil)
+                let pasted = page.annotations.compactMap { $0 as? TextBoxAnnotation }.filter { $0.text == "Готовый текст" }
+                print("paste x2: text boxes \(n0) → \(boxes()), positions \(pasted.map { "\(Int($0.bounds.minX)),\(Int($0.bounds.minY))" })")
+                pb.clearContents()
+                pb.setString("Вставленная строка", forType: .string)
+                view.paste(nil)
+                print("external text paste: \(page.annotations.contains { ($0 as? TextBoxAnnotation)?.text == "Вставленная строка" })")
+                pb.clearContents()
+                if !saved.isEmpty { pb.writeObjects(saved) }
+                fflush(stdout)
+                exit(0)
+            }
+        }
+    }
+}
+
+/// `PAGEYARD_TRTEST=<dir>`: page → text blocks → fake translation overlay → into document.
+enum TranslationTest {
+    static func scheduleIfRequested() {
+        guard let dir = ProcessInfo.processInfo.environment["PAGEYARD_TRTEST"] else { return }
+        let out = URL(fileURLWithPath: dir)
+        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("trtest.pdf")
+        try? ScreenshotTour.demoFormData().write(to: file)
+        NSDocumentController.shared.openDocument(withContentsOf: file, display: true) { doc, _, _ in
+            guard let wc = doc?.windowControllers.first as? EditorWindowController, let window = wc.window,
+                  let view = Optional(wc.pdfView), let page = view.document?.page(at: 1) else { exit(1) }
+            window.setFrame(NSRect(x: 80, y: 80, width: 1300, height: 900), display: true)
+            view.go(to: page)
+            let blocks = PageTextBlocks.blocks(on: page)
+            for b in blocks { print("block \(b.rect.integral) size \(b.sourceFontSize): \(b.source.prefix(70))") }
+
+            // PAGEYARD_TRREAL=1: a real request with the key from PAGEYARD_CLAUDE_KEY.
+            if ProcessInfo.processInfo.environment["PAGEYARD_TRREAL"] != nil {
+                TranslationSettings.provider = .claude
+                TranslationSettings.sourceLanguage = "auto"
+                TranslationSettings.targetLanguage = "English"
+                let started = Date()
+                view.onTranslationError = { print("ERROR: \($0)"); fflush(stdout); exit(2) }
+                view.translationScope = .page
+                view.translationOn = true
+                func poll() {
+                    if view.hasTranslation(on: page) {
+                        let done = view.translationBlocks(on: page)
+                        print(String(format: "translated in %.1fs:", Date().timeIntervalSince(started)))
+                        for b in done { print("  \(b.source.prefix(40)) → \(b.text ?? "-")") }
+                        RunLoop.main.run(until: Date().addingTimeInterval(1))
+                        ScreenshotTour.capture(window, to: out.appendingPathComponent("real.png"))
+                        fflush(stdout)
+                        exit(0)
+                    }
+                    if Date().timeIntervalSince(started) > 150 { print("timeout"); fflush(stdout); exit(3) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: poll)
+                }
+                poll()
+                return
+            }
+            view.translationScope = .selection   // no automatic request in the offline test
+            wc.toggleTranslation(nil)
+            for b in blocks { b.text = "[EN] " + b.source.uppercased() }
+            view.injectTranslation(blocks, on: page)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                ScreenshotTour.capture(window, to: out.appendingPathComponent("translated.png"))
+                let before = page.annotations.filter { $0 is TextBoxAnnotation }.count
+                view.moveTranslationIntoDocument(page: page)
+                let after = page.annotations.filter { $0 is TextBoxAnnotation }.count
+                print("moved into document: text boxes \(before) → \(after); overlay left: \(view.hasTranslation(on: page))")
+                let baked = PDFDocument(data: DocumentWriter.bake(view.document!, password: nil).data)
+                let text = baked?.page(at: 1)?.string ?? ""
+                print("saved page has translation: \(text.contains("[EN]")), original removed: \(!text.contains("Исполнитель обязуется"))")
+                SettingsWindowController.shared.show()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+                if let w = SettingsWindowController.shared.window {
+                    ScreenshotTour.capture(w, to: out.appendingPathComponent("settings.png"))
+                }
                 fflush(stdout)
                 exit(0)
             }

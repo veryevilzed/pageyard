@@ -8,13 +8,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
 
+    @objc func showSettings(_ sender: Any?) {
+        SettingsWindowController.shared.show()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         DebugSnapshot.scheduleIfRequested()
         ScreenshotTour.scheduleIfRequested()
         ZoomTest.scheduleIfRequested()
+        TranslationTest.scheduleIfRequested()
         DispatchQueue.main.async {
             if NSDocumentController.shared.documents.isEmpty, ProcessInfo.processInfo.environment["PAGEYARD_SCREENSHOTS"] == nil,
-               ProcessInfo.processInfo.environment["PAGEYARD_ZOOMTEST"] == nil {
+               ProcessInfo.processInfo.environment["PAGEYARD_ZOOMTEST"] == nil,
+               ProcessInfo.processInfo.environment["PAGEYARD_TRTEST"] == nil {
                 NSDocumentController.shared.openDocument(nil)
             }
         }
@@ -50,6 +56,8 @@ enum MainMenu {
         _ = submenu(name, [
             item("О программе \(name)", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
             .separator(),
+            item("Настройки…", #selector(AppDelegate.showSettings(_:)), ","),
+            .separator(),
             item("Скрыть \(name)", #selector(NSApplication.hide(_:)), "h"),
             item("Скрыть остальные", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
             item("Показать все", #selector(NSApplication.unhideAllApplications(_:))),
@@ -60,6 +68,8 @@ enum MainMenu {
         let exportMenu = NSMenu(title: "Экспорт")
         exportMenu.addItem(item("Текущая страница как изображение…", #selector(EditorWindowController.exportCurrentPageImage(_:)), "e", [.command, .shift]))
         exportMenu.addItem(item("Страницы как изображения…", #selector(EditorWindowController.exportPageImages(_:)), "e", [.command, .shift, .option]))
+        exportMenu.addItem(.separator())
+        exportMenu.addItem(item("PDF без аннотаций…", #selector(EditorWindowController.exportWithoutAnnotations(_:))))
         let exportItem = NSMenuItem(title: "Экспорт", action: nil, keyEquivalent: "")
         exportItem.submenu = exportMenu
 
@@ -96,6 +106,7 @@ enum MainMenu {
             item("Вырезать", #selector(NSText.cut(_:)), "x"),
             item("Копировать", #selector(NSText.copy(_:)), "c"),
             item("Вставить", #selector(NSText.paste(_:)), "v"),
+            item("Дублировать", #selector(EditorPDFView.duplicateSelection(_:)), "d"),
             item("Выбрать всё", #selector(NSText.selectAll(_:)), "a"),
             .separator(),
             item("Удалить объект  ⌫", #selector(EditorWindowController.deleteSelection(_:))),
@@ -123,6 +134,7 @@ enum MainMenu {
             .separator(),
             item("Панель страниц", #selector(EditorWindowController.toggleThumbnails(_:)), "s", [.command, .option]),
             item("Показывать пометки маркером", #selector(EditorWindowController.toggleMarks(_:)), "m", [.command, .shift]),
+            item("Перевод страницы", #selector(EditorWindowController.toggleTranslation(_:)), "t", [.command, .shift]),
         ])
 
         let window = submenu("Окно", [

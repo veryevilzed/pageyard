@@ -99,7 +99,7 @@ protocol EditorPDFViewDelegate: AnyObject {
     func editorMarksVisibilityChanged(_ visible: Bool)
 }
 
-final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvider {
+final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvider, NSMenuItemValidation {
     weak var editorDelegate: EditorPDFViewDelegate?
     let detector = FieldDetector()
 
@@ -168,6 +168,7 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
         case rect(EditableAnnotation, PDFPage, CGPoint)
         case textSelect(PDFPage, CGPoint)
         case textArea(TextBoxAnnotation?, PDFPage, CGPoint, Bool)
+        case translateArea(PDFPage, CGPoint)
     }
 
     private var drag: Drag = .none
@@ -183,6 +184,7 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
     override init(frame: NSRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
+        NotificationCenter.default.addObserver(self, selector: #selector(pageDidChange(_:)), name: .PDFViewPageChanged, object: self)
         pageOverlayViewProvider = self
         NotificationCenter.default.addObserver(self, selector: #selector(scaleChanged(_:)),
                                                name: .PDFViewScaleChanged, object: self)
@@ -245,6 +247,133 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
         overlays.object(forKey: page)?.needsDisplay = true
         needsDisplay = true
         NotificationCenter.default.post(name: .editorPageChanged, object: page)
+    }
+
+    // MARK: - Translation
+
+    enum TranslationScope: Int { case page, selection }
+
+    /// Translations drawn over the original; nothing is written into the file
+    /// unless the user moves them into the document.
+    var translationOn = false {
+        didSet {
+            guard oldValue != translationOn else { return }
+            redrawAllOverlays()
+            if translationOn { translateCurrentPageIfNeeded() }
+        }
+    }
+
+    var translationScope: TranslationScope = .page {
+        didSet { if translationScope == .page { translateCurrentPageIfNeeded() } }
+    }
+
+    /// Progress text (nil when idle); errors come with `isError`.
+    var onTranslationStatus: ((String?) -> Void)?
+    var onTranslationError: ((String) -> Void)?
+    private var translations: [ObjectIdentifier: [TranslatedBlock]] = [:]
+    private var translating = Set<ObjectIdentifier>()
+    private var translateMarquee: (PDFPage, CGRect)?
+
+    func translationBlocks(on page: PDFPage) -> [TranslatedBlock] {
+        translationOn ? translations[ObjectIdentifier(page)] ?? [] : []
+    }
+
+    func marquee(on page: PDFPage) -> CGRect? {
+        translateMarquee.flatMap { $0.0 === page ? $0.1 : nil }
+    }
+
+    func hasTranslation(on page: PDFPage) -> Bool {
+        !(translations[ObjectIdentifier(page)] ?? []).isEmpty
+    }
+
+    /// Languages changed: everything translated so far is outdated.
+    func resetTranslations() {
+        translations = [:]
+        redrawAllOverlays()
+        translateCurrentPageIfNeeded()
+    }
+
+    private func redrawAllOverlays() {
+        guard let doc = document else { return }
+        for i in 0..<doc.pageCount {
+            if let page = doc.page(at: i) { overlays.object(forKey: page)?.needsDisplay = true }
+        }
+    }
+
+    @objc private func pageDidChange(_ note: Notification) {
+        translateCurrentPageIfNeeded()
+    }
+
+    func translateCurrentPageIfNeeded() {
+        guard translationOn, translationScope == .page, let page = currentPage, !hasTranslation(on: page) else { return }
+        translate(page: page, area: nil)
+    }
+
+    func translate(page: PDFPage, area: CGRect?) {
+        let key = ObjectIdentifier(page)
+        guard !translating.contains(key) else { return }
+        let blocks = PageTextBlocks.blocks(on: page, in: area)
+        guard !blocks.isEmpty else {
+            onTranslationStatus?(area == nil ? "На странице нет текста для перевода (скан? — нужен текстовый слой)" : "В рамке нет текста")
+            return
+        }
+        translating.insert(key)
+        onTranslationStatus?("Перевод: \(blocks.count) блоков…")
+        let from = TranslationSettings.sourceLanguage, to = TranslationSettings.targetLanguage
+        Task { @MainActor in
+            defer { self.translating.remove(key) }
+            do {
+                let out = try await TranslationService.translate(blocks.map(\.source), from: from, to: to)
+                for (block, text) in zip(blocks, out) {
+                    block.text = text
+                    block.background = BackgroundSampler.color(on: page, around: block.rect.insetBy(dx: -2, dy: -2))
+                    block.fit()
+                }
+                var list = self.translations[key] ?? []
+                if let area { list.removeAll { $0.rect.intersects(area) } } else { list = [] }
+                self.translations[key] = list + blocks
+                self.overlays.object(forKey: page)?.needsDisplay = true
+                self.onTranslationStatus?(nil)
+            } catch {
+                self.onTranslationStatus?(nil)
+                self.onTranslationError?(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Diagnostics: show `blocks` as the page's translation without a network call.
+    func injectTranslation(_ blocks: [TranslatedBlock], on page: PDFPage) {
+        for b in blocks {
+            b.background = BackgroundSampler.color(on: page, around: b.rect.insetBy(dx: -2, dy: -2))
+            b.fit()
+        }
+        translations[ObjectIdentifier(page)] = blocks
+        overlays.object(forKey: page)?.needsDisplay = true
+    }
+
+    /// Turns the overlay translation of a page into regular text blocks that
+    /// hide (and on save remove) the original under them.
+    func moveTranslationIntoDocument(page: PDFPage) {
+        let blocks = translations[ObjectIdentifier(page)] ?? []
+        guard !blocks.isEmpty else { NSSound.beep(); return }
+        let pad = TextBoxAnnotation.padding
+        undoManager?.beginUndoGrouping()
+        for b in blocks {
+            guard let text = b.text else { continue }
+            let tb = TextBoxAnnotation(text: text, font: TranslatedBlock.font(b.fittedSize), color: .black,
+                                       topLeft: CGPoint(x: b.rect.minX - pad, y: b.rect.maxY + pad))
+            tb.wrapWidth = b.rect.width + 2 * pad
+            tb.minHeight = b.rect.height + 2 * pad
+            tb.erasesBelow = true
+            tb.cover = CGSize(width: tb.wrapWidth!, height: tb.minHeight)
+            tb.coverColor = b.background
+            tb.fit()
+            add(tb, to: page, name: "Перевод в документ")
+        }
+        undoManager?.endUndoGrouping()
+        undoManager?.setActionName("Перевод в документ")
+        translations[ObjectIdentifier(page)] = nil
+        refresh(page: page)
     }
 
     // MARK: - Page overlays
@@ -398,6 +527,13 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
     override func mouseDown(with event: NSEvent) {
         if editing != nil { finishEditing() }
         window?.makeFirstResponder(self)
+        // Translation of a chosen area: drag a frame (Select tool or view mode).
+        if translationOn, translationScope == .selection, mode == .view || tool == .select,
+           let (page, p, _) = locate(event), hitAnnotation(on: page, at: p) == nil, page.annotation(at: p)?.type != "Widget" {
+            selected = nil
+            drag = .translateArea(page, p)
+            return
+        }
         guard mode != .view, let (page, p, vp) = locate(event) else { super.mouseDown(with: event); return }
         let snap = !event.modifierFlags.contains(.option)
 
@@ -487,6 +623,10 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
         case let .textSelect(page, start):
             let p = convert(convert(event.locationInWindow, from: nil), to: page)
             currentSelection = page.selection(from: start, to: p)
+        case let .translateArea(page, start):
+            let p = convert(convert(event.locationInWindow, from: nil), to: page)
+            translateMarquee = (page, CGRect(x: min(p.x, start.x), y: min(p.y, start.y), width: abs(p.x - start.x), height: abs(p.y - start.y)))
+            overlays.object(forKey: page)?.needsDisplay = true
         case let .textArea(area, page, start, snap):
             let p = convert(convert(event.locationInWindow, from: nil), to: page)
             let r = CGRect(x: min(p.x, start.x), y: min(p.y, start.y), width: abs(p.x - start.x), height: abs(p.y - start.y))
@@ -532,6 +672,13 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
                 editNote(of: h, isNew: true)
             } else {
                 add(w, to: page, name: "Замазка")
+            }
+        case let .translateArea(page, _):
+            let area = translateMarquee?.1
+            translateMarquee = nil
+            overlays.object(forKey: page)?.needsDisplay = true
+            if let area, area.width * scaleFactor > 8, area.height * scaleFactor > 4 {
+                translate(page: page, area: area)
             }
         case let .textArea(area, page, start, snap):
             if let tb = area {
@@ -957,6 +1104,141 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
         }
         onDropFiles?(files)
         return true
+    }
+
+    // MARK: - Copy / paste of objects
+
+    /// Objects copied in this app. The pasteboard change count tells whether
+    /// the clipboard still holds them or something newer from another app.
+    private enum ObjectClipboard {
+        static var items: [EditableAnnotation] = []
+        static var changeCount = -1
+        static var sourcePage: PDFPage?
+        static var pasteCount = 0
+    }
+
+    private static let objectPasteboardType = NSPasteboard.PasteboardType("com.zed.pageyard.objects")
+
+    override func copy(_ sender: Any?) {
+        guard let a = selected else { super.copy(sender); return }
+        ObjectClipboard.items = [a.duplicate()]
+        ObjectClipboard.sourcePage = a.page
+        ObjectClipboard.pasteCount = 0
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString("", forType: Self.objectPasteboardType)
+        // Other apps get a picture of the object.
+        if let png = Self.pngPreview(of: a) { pb.setData(png, forType: .png) }
+        if let tb = a as? TextBoxAnnotation { pb.setString(tb.text, forType: .string) }
+        ObjectClipboard.changeCount = pb.changeCount
+    }
+
+    @objc func cut(_ sender: Any?) {
+        guard let a = selected else { NSSound.beep(); return }
+        copy(sender)
+        remove(a, name: "Вырезать")
+    }
+
+    @objc func paste(_ sender: Any?) {
+        guard mode != .view, let page = currentPage else { NSSound.beep(); return }
+        let pb = NSPasteboard.general
+        if pb.changeCount == ObjectClipboard.changeCount, !ObjectClipboard.items.isEmpty {
+            ObjectClipboard.pasteCount += 1
+            // Same page: cascade so the copy is visible; other page: same spot.
+            let step = ObjectClipboard.sourcePage === page ? CGFloat(ObjectClipboard.pasteCount) * 12 : 0
+            var last: EditableAnnotation?
+            for item in ObjectClipboard.items {
+                let c = item.duplicate()
+                c.bounds = clamp(c.bounds.offsetBy(dx: step, dy: -step), to: page)
+                add(c, to: page, name: "Вставка")
+                last = c
+            }
+            tool = .select
+            selected = last
+            return
+        }
+        // Something from another app: a picture or text.
+        let center = visibleCenter(on: page)
+        if let image = NSImage(pasteboard: pb), pb.availableType(from: [.png, .tiff, .pdf, .fileURL]) != nil {
+            let box = page.bounds(for: .cropBox)
+            let k = min(1, box.width * 0.5 / max(image.size.width, 1), box.height * 0.5 / max(image.size.height, 1))
+            let size = CGSize(width: image.size.width * k, height: image.size.height * k)
+            let a = ImageAnnotation(image: image, rect: CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                                                               width: size.width, height: size.height))
+            add(a, to: page, name: "Вставка картинки")
+            tool = .select
+            selected = a
+        } else if let text = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+            let tb = TextBoxAnnotation(text: text, font: .defaultFill(fontSize), color: textColor, topLeft: .zero)
+            tb.wrapWidth = min(tb.textSize().width, page.bounds(for: .cropBox).width * 0.6)
+            tb.fit()
+            tb.bounds.origin = CGPoint(x: center.x - tb.bounds.width / 2, y: center.y - tb.bounds.height / 2)
+            add(tb, to: page, name: "Вставка текста")
+            tool = .select
+            selected = tb
+        } else {
+            NSSound.beep()
+        }
+    }
+
+    @objc func duplicateSelection(_ sender: Any?) {
+        guard let a = selected, let page = a.page else { NSSound.beep(); return }
+        let c = a.duplicate()
+        c.bounds = clamp(a.bounds.offsetBy(dx: 12, dy: -12), to: page)
+        add(c, to: page, name: "Дублировать")
+        selected = c
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(copy(_:)):
+            return selected != nil || !(currentSelection?.string ?? "").isEmpty
+        case #selector(cut(_:)), #selector(duplicateSelection(_:)):
+            return selected != nil && mode != .view
+        case #selector(paste(_:)):
+            return canPasteObject
+        default:
+            return responds(to: item.action)
+        }
+    }
+
+    var canPasteObject: Bool {
+        guard mode != .view else { return false }
+        let pb = NSPasteboard.general
+        return (pb.changeCount == ObjectClipboard.changeCount && !ObjectClipboard.items.isEmpty)
+            || pb.availableType(from: [.png, .tiff, .pdf, .string]) != nil
+    }
+
+    private func clamp(_ r: CGRect, to page: PDFPage) -> CGRect {
+        let box = page.bounds(for: .cropBox)
+        var r = r
+        r.origin.x = min(max(r.minX, box.minX), max(box.minX, box.maxX - r.width))
+        r.origin.y = min(max(r.minY, box.minY), max(box.minY, box.maxY - r.height))
+        return r
+    }
+
+    private func visibleCenter(on page: PDFPage) -> CGPoint {
+        let p = convert(CGPoint(x: bounds.midX, y: bounds.midY), to: page)
+        let box = page.bounds(for: .cropBox)
+        return CGPoint(x: min(max(p.x, box.minX), box.maxX), y: min(max(p.y, box.minY), box.maxY))
+    }
+
+    private static func pngPreview(of a: EditableAnnotation) -> Data? {
+        let scale: CGFloat = 3
+        let r = a.bounds
+        guard r.width > 0, r.height > 0,
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(r.width * scale), pixelsHigh: Int(r.height * scale),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let gc = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        let wasSelected = a.isSelected
+        a.isSelected = false
+        defer { a.isSelected = wasSelected }
+        let ctx = gc.cgContext
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: -r.minX, y: -r.minY)
+        a.render(in: ctx)
+        return rep.representation(using: .png, properties: [:])
     }
 
     // MARK: - Continuity import

@@ -124,6 +124,29 @@ enum DocumentWriter {
         return doc.dataRepresentation() ?? data
     }
 
+    /// Annotation types counted as markup (comments, highlights, drawings).
+    /// Form fields and links are content, not annotations to strip.
+    static let markupTypes: Set<String> = [
+        "Highlight", "Underline", "StrikeOut", "Squiggly", "Text", "Popup", "FreeText", "Ink",
+        "Square", "Circle", "Line", "Polygon", "PolyLine", "Stamp", "Caret", "FileAttachment", "Sound", "Redact",
+    ]
+
+    /// The document as it is now (page order, inserted and rotated pages) but
+    /// without any annotations: none of the user's objects or edits, and none
+    /// of the comments / highlights the file came with. Form fields stay.
+    static func withoutAnnotations(_ doc: PDFDocument) -> Data? {
+        var removed: [(PDFPage, PDFAnnotation)] = []
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i) else { continue }
+            for a in page.annotations where a is EditableAnnotation || a is HintAnnotation || markupTypes.contains(a.type ?? "") {
+                page.removeAnnotation(a)
+                removed.append((page, a))
+            }
+        }
+        defer { for (page, a) in removed { page.addAnnotation(a) } }
+        return doc.dataRepresentation()
+    }
+
     struct MuPDFError: Error { let message: String }
 
     static func removeText(from data: Data, password: String?, regions: [pe_region]) -> Result<Data, MuPDFError> {
