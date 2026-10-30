@@ -457,8 +457,37 @@ enum TranslationTest {
                 TranslationSettings.targetLanguage = "English"
                 let started = Date()
                 view.onTranslationError = { print("ERROR: \($0)"); fflush(stdout); exit(2) }
-                view.translationScope = .page
+                if ProcessInfo.processInfo.environment["PAGEYARD_TRREAL"] == "selection" {
+                    // Select only the second paragraph (as a user would) and translate it.
+                    view.translationOn = true
+                    let para = page.selection(for: CGRect(x: 50, y: 640, width: 495, height: 28))
+                    print("selected: \((para?.string ?? "").prefix(60))…")
+                    view.setCurrentSelection(para, animate: false)
+                    view.translateSelection()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        ScreenshotTour.capture(window, to: out.appendingPathComponent("pending.png"))
+                        print("pending rects while waiting: \(view.pendingRects(on: page).count)")
+                    }
+                    func pollSel() {
+                        let done = view.translationBlocks(on: page)
+                        if !done.isEmpty {
+                            print(String(format: "translated in %.1fs, blocks: %d", Date().timeIntervalSince(started), done.count))
+                            for b in done { print("  \(b.source.prefix(40)) → \(b.text ?? "-")") }
+                            RunLoop.main.run(until: Date().addingTimeInterval(1))
+                            ScreenshotTour.capture(window, to: out.appendingPathComponent("selection.png"))
+                            view.clearTranslation(on: page)
+                            print("after «Убрать перевод»: blocks \(view.translationBlocks(on: page).count)")
+                            fflush(stdout)
+                            exit(0)
+                        }
+                        if Date().timeIntervalSince(started) > 150 { print("timeout"); fflush(stdout); exit(3) }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: pollSel)
+                    }
+                    pollSel()
+                    return
+                }
                 view.translationOn = true
+                view.translate(page: page, area: nil)
                 func poll() {
                     if view.hasTranslation(on: page) {
                         let done = view.translationBlocks(on: page)
@@ -475,10 +504,17 @@ enum TranslationTest {
                 poll()
                 return
             }
-            view.translationScope = .selection   // no automatic request in the offline test
             wc.toggleTranslation(nil)
-            for b in blocks { b.text = "[EN] " + b.source.uppercased() }
+            // Deliberately longer than the originals: everything must stay visible.
+            for b in blocks {
+                b.text = b.source.count < 25
+                    ? "[EN] \(b.source) — a much longer translated label that cannot fit on one short line"
+                    : "[EN] " + b.source + " " + b.source
+            }
             view.injectTranslation(blocks, on: page)
+            for b in blocks {
+                print(String(format: "fit: %.1fpt (orig %.1f), height %.0f of %.0f", b.fittedSize, b.sourceFontSize, b.fittedHeight, b.rect.height))
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 ScreenshotTour.capture(window, to: out.appendingPathComponent("translated.png"))
                 let before = page.annotations.filter { $0 is TextBoxAnnotation }.count

@@ -34,6 +34,31 @@ final class PageOverlayView: NSView {
                 page.bounds(for: .cropBox).fill(using: .sourceOver)
                 for block in blocks { block.draw() }
             }
+            // Waiting for the translation: pulsing highlight over the source text.
+            let waiting = editor.pendingRects(on: page)
+            if !waiting.isEmpty {
+                let phase = editor.pulsePhase
+                let accent = NSColor.controlAccentColor
+                for r in waiting {
+                    let area = r.insetBy(dx: -3, dy: -2)
+                    accent.withAlphaComponent(0.12 + 0.22 * phase).setFill()
+                    let shape = NSBezierPath(roundedRect: area, xRadius: 2.5, yRadius: 2.5)
+                    shape.fill()
+                    shape.lineWidth = 1.2 / max(editor.scaleFactor, 0.05)
+                    accent.withAlphaComponent(0.5 + 0.5 * phase).setStroke()
+                    shape.stroke()
+                }
+                if let first = waiting.max(by: { $0.maxY < $1.maxY }) {
+                    let font = NSFont.systemFont(ofSize: 9 / max(editor.scaleFactor, 0.4) * 1.6, weight: .semibold)
+                    let label = "Перевожу…" as NSString
+                    let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white]
+                    let size = label.size(withAttributes: attrs)
+                    let tag = CGRect(x: first.minX - 3, y: first.maxY + 3, width: size.width + 8, height: size.height + 3)
+                    accent.setFill()
+                    NSBezierPath(roundedRect: tag, xRadius: tag.height / 2, yRadius: tag.height / 2).fill()
+                    label.draw(at: CGPoint(x: tag.minX + 4, y: tag.minY + 1.5), withAttributes: attrs)
+                }
+            }
             if let r = editor.marquee(on: page) {
                 NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
                 r.fill()

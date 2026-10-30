@@ -259,6 +259,12 @@ final class TranslatedBlock {
     var background: NSColor = .white
     /// Largest font size (≤ the original) at which the translation fits the rect.
     var fittedSize: CGFloat = 10
+    /// Height the text needs at `fittedSize`; more than the rect when even the
+    /// smallest readable size doesn't fit (the card then grows downward).
+    var fittedHeight: CGFloat = 0
+
+    /// Smallest size still worth shrinking to; below it the card grows instead.
+    static let minimumSize: CGFloat = 5
 
     init(rect: CGRect, source: String, fontSize: CGFloat) {
         self.rect = rect
@@ -268,24 +274,31 @@ final class TranslatedBlock {
 
     static func font(_ size: CGFloat) -> NSFont { .defaultFill(size) }
 
-    func fit() {
-        guard let text else { return }
-        var size = max(4, sourceFontSize)
-        let width = max(4, rect.width)
-        while size > 4 {
-            let h = (text as NSString).boundingRect(with: CGSize(width: width, height: 10_000),
+    private func textHeight(_ size: CGFloat) -> CGFloat {
+        guard let text else { return 0 }
+        return ceil((text as NSString).boundingRect(with: CGSize(width: max(4, rect.width), height: 100_000),
                                                     options: [.usesLineFragmentOrigin, .usesFontLeading],
-                                                    attributes: [.font: Self.font(size)]).height
-            if h <= rect.height + size * 0.2 { break }
-            size -= 0.5
-        }
-        fittedSize = size
+                                                    attributes: [.font: Self.font(size)]).height)
     }
 
-    /// White card with the translation; the page around it is dimmed by the overlay.
+    func fit() {
+        var size = max(Self.minimumSize, sourceFontSize)
+        while size > Self.minimumSize, textHeight(size) > rect.height {
+            size -= 0.25
+        }
+        fittedSize = max(Self.minimumSize, size)
+        fittedHeight = max(rect.height, textHeight(fittedSize))
+    }
+
+    /// Where the text is drawn: the original area, extended down if needed.
+    var textRect: CGRect {
+        CGRect(x: rect.minX, y: rect.maxY - fittedHeight, width: rect.width, height: fittedHeight)
+    }
+
+    /// White card with the full translation; the page around it is dimmed by the overlay.
     func draw() {
         guard let text else { return }
-        let card = rect.insetBy(dx: -3, dy: -2)
+        let card = textRect.insetBy(dx: -3, dy: -2)
         NSGraphicsContext.saveGraphicsState()
         let shadow = NSShadow()
         shadow.shadowBlurRadius = 3
@@ -295,7 +308,7 @@ final class TranslatedBlock {
         NSColor.white.setFill()
         NSBezierPath(roundedRect: card, xRadius: 2.5, yRadius: 2.5).fill()
         NSGraphicsContext.restoreGraphicsState()
-        (text as NSString).draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine],
+        (text as NSString).draw(with: textRect, options: [.usesLineFragmentOrigin, .usesFontLeading],
                                 attributes: [.font: Self.font(fittedSize), .foregroundColor: NSColor.black])
     }
 }

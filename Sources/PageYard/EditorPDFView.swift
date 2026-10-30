@@ -97,6 +97,7 @@ protocol EditorPDFViewDelegate: AnyObject {
     func editorNeedsSignature()
     func editorPagesChanged()
     func editorMarksVisibilityChanged(_ visible: Bool)
+    func editorWantsTranslation()
 }
 
 final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvider, NSMenuItemValidation {
@@ -184,7 +185,6 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
     override init(frame: NSRect) {
         super.init(frame: frame)
         registerForDraggedTypes([.fileURL])
-        NotificationCenter.default.addObserver(self, selector: #selector(pageDidChange(_:)), name: .PDFViewPageChanged, object: self)
         pageOverlayViewProvider = self
         NotificationCenter.default.addObserver(self, selector: #selector(scaleChanged(_:)),
                                                name: .PDFViewScaleChanged, object: self)
@@ -251,27 +251,45 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
 
     // MARK: - Translation
 
-    enum TranslationScope: Int { case page, selection }
-
     /// Translations drawn over the original; nothing is written into the file
     /// unless the user moves them into the document.
     var translationOn = false {
         didSet {
             guard oldValue != translationOn else { return }
             redrawAllOverlays()
-            if translationOn { translateCurrentPageIfNeeded() }
         }
-    }
-
-    var translationScope: TranslationScope = .page {
-        didSet { if translationScope == .page { translateCurrentPageIfNeeded() } }
     }
 
     /// Progress text (nil when idle); errors come with `isError`.
     var onTranslationStatus: ((String?) -> Void)?
     var onTranslationError: ((String) -> Void)?
     private var translations: [ObjectIdentifier: [TranslatedBlock]] = [:]
-    private var translating = Set<ObjectIdentifier>()
+    /// Text being translated right now: shown as a pulsing highlight.
+    private var pending: [(id: UUID, page: PDFPage, rects: [CGRect])] = []
+    private var pulseTimer: Timer?
+
+    func pendingRects(on page: PDFPage) -> [CGRect] {
+        pending.filter { $0.page === page }.flatMap(\.rects)
+    }
+
+    /// 0…1, for the waiting animation.
+    var pulsePhase: CGFloat {
+        CGFloat(sin(Date().timeIntervalSinceReferenceDate * 4) * 0.5 + 0.5)
+    }
+
+    private func updatePulse() {
+        if pending.isEmpty {
+            pulseTimer?.invalidate()
+            pulseTimer = nil
+        } else if pulseTimer == nil {
+            pulseTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                for page in Set(self.pending.map { ObjectIdentifier($0.page) }).compactMap({ id in self.pending.first { ObjectIdentifier($0.page) == id }?.page }) {
+                    self.overlays.object(forKey: page)?.needsDisplay = true
+                }
+            }
+        }
+    }
     private var translateMarquee: (PDFPage, CGRect)?
 
     func translationBlocks(on page: PDFPage) -> [TranslatedBlock] {
@@ -290,7 +308,6 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
     func resetTranslations() {
         translations = [:]
         redrawAllOverlays()
-        translateCurrentPageIfNeeded()
     }
 
     private func redrawAllOverlays() {
@@ -300,28 +317,58 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
         }
     }
 
-    @objc private func pageDidChange(_ note: Notification) {
-        translateCurrentPageIfNeeded()
+    /// Translates exactly the selected text (on every page it spans).
+    func translateSelection(_ sel: PDFSelection? = nil) {
+        guard let sel = sel ?? currentSelection, !(sel.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            onTranslationError?("Сначала выделите текст мышью")
+            return
+        }
+        for page in sel.pages {
+            let r = sel.bounds(for: page)
+            guard r.width > 1, r.height > 1 else { continue }
+            translate(page: page, area: r.insetBy(dx: -0.5, dy: -0.5))
+        }
+        clearSelection()
     }
 
-    func translateCurrentPageIfNeeded() {
-        guard translationOn, translationScope == .page, let page = currentPage, !hasTranslation(on: page) else { return }
-        translate(page: page, area: nil)
+    var hasTextSelection: Bool {
+        !(currentSelection?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// A click on a translated block shows the original there again.
+    private func removeTranslationBlock(at p: CGPoint, on page: PDFPage) {
+        let key = ObjectIdentifier(page)
+        guard var list = translations[key], let i = list.firstIndex(where: { $0.textRect.insetBy(dx: -3, dy: -2).contains(p) }) else { return }
+        list.remove(at: i)
+        translations[key] = list
+        overlays.object(forKey: page)?.needsDisplay = true
+    }
+
+    /// Back to the original on this page (translation of other pages is kept).
+    func clearTranslation(on page: PDFPage) {
+        translations[ObjectIdentifier(page)] = []
+        overlays.object(forKey: page)?.needsDisplay = true
     }
 
     func translate(page: PDFPage, area: CGRect?) {
         let key = ObjectIdentifier(page)
-        guard !translating.contains(key) else { return }
         let blocks = PageTextBlocks.blocks(on: page, in: area)
         guard !blocks.isEmpty else {
             onTranslationStatus?(area == nil ? "На странице нет текста для перевода (скан? — нужен текстовый слой)" : "В рамке нет текста")
             return
         }
-        translating.insert(key)
+        let job = UUID()
+        pending.append((job, page, blocks.map(\.rect)))
+        updatePulse()
         onTranslationStatus?("Перевод: \(blocks.count) блоков…")
         let from = TranslationSettings.sourceLanguage, to = TranslationSettings.targetLanguage
         Task { @MainActor in
-            defer { self.translating.remove(key) }
+            defer {
+                self.pending.removeAll { $0.id == job }
+                self.updatePulse()
+                self.overlays.object(forKey: page)?.needsDisplay = true
+                if self.pending.isEmpty { self.onTranslationStatus?(nil) }
+            }
             do {
                 let out = try await TranslationService.translate(blocks.map(\.source), from: from, to: to)
                 for (block, text) in zip(blocks, out) {
@@ -333,9 +380,7 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
                 if let area { list.removeAll { $0.rect.intersects(area) } } else { list = [] }
                 self.translations[key] = list + blocks
                 self.overlays.object(forKey: page)?.needsDisplay = true
-                self.onTranslationStatus?(nil)
             } catch {
-                self.onTranslationStatus?(nil)
                 self.onTranslationError?(error.localizedDescription)
             }
         }
@@ -363,7 +408,7 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
             let tb = TextBoxAnnotation(text: text, font: TranslatedBlock.font(b.fittedSize), color: .black,
                                        topLeft: CGPoint(x: b.rect.minX - pad, y: b.rect.maxY + pad))
             tb.wrapWidth = b.rect.width + 2 * pad
-            tb.minHeight = b.rect.height + 2 * pad
+            tb.minHeight = b.fittedHeight + 2 * pad
             tb.erasesBelow = true
             tb.cover = CGSize(width: tb.wrapWidth!, height: tb.minHeight)
             tb.coverColor = b.background
@@ -374,6 +419,22 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
         undoManager?.setActionName("Перевод в документ")
         translations[ObjectIdentifier(page)] = nil
         refresh(page: page)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        if hasTextSelection {
+            let item = NSMenuItem(title: "Перевести выделенное", action: #selector(translateSelectionAction(_:)), keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: 0)
+            menu.insertItem(.separator(), at: 1)
+        }
+        return menu
+    }
+
+    @objc func translateSelectionAction(_ sender: Any?) {
+        if !translationOn { editorDelegate?.editorWantsTranslation() }
+        translateSelection()
     }
 
     // MARK: - Page overlays
@@ -527,14 +588,19 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
     override func mouseDown(with event: NSEvent) {
         if editing != nil { finishEditing() }
         window?.makeFirstResponder(self)
-        // Translation of a chosen area: drag a frame (Select tool or view mode).
-        if translationOn, translationScope == .selection, mode == .view || tool == .select,
-           let (page, p, _) = locate(event), hitAnnotation(on: page, at: p) == nil, page.annotation(at: p)?.type != "Widget" {
+        // Translation: a click on a translated block brings the original back;
+        // ⌥-drag frames an area to translate (plain drag just selects text).
+        if translationOn, mode == .view || tool == .select,
+           let (page, p, _) = locate(event), hitAnnotation(on: page, at: p) == nil, page.annotation(at: p)?.type != "Widget",
+           event.modifierFlags.contains(.option) || translationBlocks(on: page).contains(where: { $0.textRect.insetBy(dx: -3, dy: -2).contains(p) }) {
             selected = nil
             drag = .translateArea(page, p)
             return
         }
-        guard mode != .view, let (page, p, vp) = locate(event) else { super.mouseDown(with: event); return }
+        guard mode != .view, let (page, p, vp) = locate(event) else {
+            super.mouseDown(with: event)
+            return
+        }
         let snap = !event.modifierFlags.contains(.option)
 
         if let s = selected, s.page === page, isOnHandle(s, viewPoint: vp) {
@@ -673,12 +739,14 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
             } else {
                 add(w, to: page, name: "Замазка")
             }
-        case let .translateArea(page, _):
+        case let .translateArea(page, start):
             let area = translateMarquee?.1
             translateMarquee = nil
             overlays.object(forKey: page)?.needsDisplay = true
             if let area, area.width * scaleFactor > 8, area.height * scaleFactor > 4 {
                 translate(page: page, area: area)
+            } else {
+                removeTranslationBlock(at: start, on: page)
             }
         case let .textArea(area, page, start, snap):
             if let tb = area {
@@ -738,6 +806,15 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
     }
 
     override func mouseMoved(with event: NSEvent) {
+        // Hovering a translated block shows the full translation and the original.
+        if translationOn, let (page, p, _) = locate(event),
+           let block = translationBlocks(on: page).last(where: { $0.textRect.insetBy(dx: -3, dy: -2).contains(p) }),
+           let text = block.text {
+            let tip = "\(text)\n\nОригинал: \(block.source)"
+            if toolTip != tip { toolTip = tip }
+        } else if toolTip != nil {
+            toolTip = nil
+        }
         guard mode != .view, let (page, p, vp) = locate(event) else { super.mouseMoved(with: event); return }
         if hitAnnotation(on: page, at: p) == nil, page.annotation(at: p)?.type == "Widget" {
             super.mouseMoved(with: event)

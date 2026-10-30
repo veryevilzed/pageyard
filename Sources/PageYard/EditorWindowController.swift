@@ -25,7 +25,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     private var translateButton: NSButton?
     private let trSource = NSPopUpButton(frame: .zero, pullsDown: false)
     private let trTarget = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let trScope = NSSegmentedControl(labels: ["Вся страница", "Выделенное"], trackingMode: .selectOne, target: nil, action: nil)
+    /// Shows / hides the translation without closing the panel.
+    private let trSwitch = NSSwitch()
     private let trStatus = NSTextField(labelWithString: "")
     private let trSpinner = NSProgressIndicator()
 
@@ -203,11 +204,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             p.target = self
             p.action = #selector(languagesChanged)
         }
-        trScope.target = self
-        trScope.action = #selector(scopeChanged)
-        trScope.selectedSegment = UserDefaults.standard.integer(forKey: "trScope")
-        trScope.setToolTip("Переводить текущую страницу целиком (и следующие при перелистывании)", forSegment: 0)
-        trScope.setToolTip("Протяните рамку инструментом «Выбор» — переведётся только она", forSegment: 1)
+        trSwitch.target = self
+        trSwitch.action = #selector(switchChanged)
+        trSwitch.controlSize = .small
+        trSwitch.state = .on
+        trSwitch.toolTip = "Выкл — виден оригинал. Вкл при выделенном тексте — переводит только его"
         trStatus.textColor = .secondaryLabelColor
         trStatus.font = .systemFont(ofSize: 11)
         trStatus.lineBreakMode = .byTruncatingTail
@@ -218,22 +219,26 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
 
         let icon = NSImageView(image: symbol("translate", "Перевод"))
         icon.contentTintColor = .controlAccentColor
-        let again = NSButton(title: "Перевести заново", target: self, action: #selector(retranslatePage))
-        again.toolTip = "Перевести текущую страницу ещё раз"
+        let switchLabel = NSTextField(labelWithString: "Перевод")
+        let selected = NSButton(title: "Перевести выделенное", target: self, action: #selector(translateSelectedText))
+        selected.toolTip = "Перевести выделенный текст (то же — правым кликом по выделению)"
+        let again = NSButton(title: "Перевести страницу", target: self, action: #selector(retranslatePage))
+        again.toolTip = "Перевести всю текущую страницу"
+        let clear = NSButton(title: "Убрать перевод", target: self, action: #selector(clearPageTranslation))
+        clear.toolTip = "Вернуть оригинал на этой странице. Отдельный блок — кликом по нему"
         let bake = NSButton(title: "В документ", target: self, action: #selector(moveTranslationIntoDocument))
         bake.toolTip = "Перенести перевод этой страницы в документ: текст заменит оригинал и сохранится в файле"
         let settings = NSButton(title: "Ключи и модель…", target: self, action: #selector(showSettings(_:)))
-        for b in [again, bake, settings] { b.bezelStyle = .rounded; b.controlSize = .small }
+        for b in [selected, again, clear, bake, settings] { b.bezelStyle = .rounded; b.controlSize = .small }
         let from = NSTextField(labelWithString: "с")
         let to = NSTextField(labelWithString: "на")
         [from, to].forEach { $0.textColor = .secondaryLabelColor }
         for p in [trSource, trTarget] { p.controlSize = .small }
-        trScope.controlSize = .small
 
-        let stack = NSStackView(views: [icon, from, trSource, to, trTarget, trScope, again, bake, trSpinner, trStatus, settings])
+        let stack = NSStackView(views: [icon, switchLabel, trSwitch, from, trSource, to, trTarget, selected, again, clear, bake, trSpinner, trStatus, settings])
         stack.spacing = 8
+        stack.setCustomSpacing(16, after: trSwitch)
         stack.setCustomSpacing(16, after: trTarget)
-        stack.setCustomSpacing(16, after: trScope)
         stack.translatesAutoresizingMaskIntoConstraints = false
         translationBar.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -242,11 +247,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             stack.centerYAnchor.constraint(equalTo: translationBar.centerYAnchor),
         ])
 
-        pdfView.translationScope = EditorPDFView.TranslationScope(rawValue: trScope.selectedSegment) ?? .page
         pdfView.onTranslationStatus = { [weak self] text in
             guard let self else { return }
             self.trStatus.textColor = .secondaryLabelColor
-            self.trStatus.stringValue = text ?? ""
+            self.trStatus.stringValue = text ?? self.translationHint
             self.trStatus.toolTip = text
             text == nil ? self.trSpinner.stopAnimation(nil) : self.trSpinner.startAnimation(nil)
         }
@@ -260,12 +264,52 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         }
     }
 
+    private var translationHint: String {
+        pdfView.translationOn
+            ? "Выделите текст и нажмите «Перевести выделенное»; ⌥+рамка — область; клик по переводу — убрать"
+            : "Перевод выключен — виден оригинал. Выделите текст и включите перевод"
+    }
+
+    private var translationPanelOpen: Bool { !translationBar.isHidden }
+
+    private func setTranslationShown(_ on: Bool) {
+        trSwitch.state = on ? .on : .off
+        pdfView.translationOn = on
+        trStatus.textColor = .secondaryLabelColor
+        trStatus.stringValue = translationHint
+    }
+
+    func editorWantsTranslation() {
+        if !translationPanelOpen { toggleTranslation(nil) }
+        setTranslationShown(true)
+    }
+
+    @objc private func switchChanged() {
+        setTranslationShown(trSwitch.state == .on)
+        // Turning it on with text selected translates just that text.
+        if pdfView.translationOn, pdfView.hasTextSelection { pdfView.translateSelection() }
+    }
+
+    @objc private func translateSelectedText() {
+        setTranslationShown(true)
+        pdfView.translateSelection()
+    }
+
+    @objc private func clearPageTranslation() {
+        guard let page = pdfView.currentPage else { return }
+        pdfView.clearTranslation(on: page)
+    }
+
+    /// The toolbar button opens / closes the panel; nothing is translated
+    /// until the user asks.
     @objc func toggleTranslation(_ sender: Any?) {
-        pdfView.translationOn.toggle()
-        translationBar.isHidden = !pdfView.translationOn
-        translateButton?.state = pdfView.translationOn ? .on : .off
+        let open = !translationPanelOpen
+        translationBar.isHidden = !open
+        translateButton?.state = open ? .on : .off
         relayoutRows()
-        if pdfView.translationOn, TranslationSettings.apiKey(TranslationSettings.provider) == nil {
+        setTranslationShown(open && trSwitch.state == .on)
+        if open, pdfView.mode != .view { pdfView.activate(.select) }
+        if open, TranslationSettings.apiKey(TranslationSettings.provider) == nil {
             trStatus.stringValue = "Укажите ключ API в настройках (⌘,)"
         }
     }
@@ -276,14 +320,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         pdfView.resetTranslations()
     }
 
-    @objc private func scopeChanged() {
-        UserDefaults.standard.set(trScope.selectedSegment, forKey: "trScope")
-        pdfView.translationScope = EditorPDFView.TranslationScope(rawValue: trScope.selectedSegment) ?? .page
-        if pdfView.translationScope == .selection { pdfView.activate(.select) }
-    }
-
     @objc private func retranslatePage() {
         guard let page = pdfView.currentPage else { return }
+        setTranslationShown(true)
         pdfView.translate(page: page, area: nil)
     }
 
@@ -835,7 +874,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             item.state = pdfView.showsFieldHints ? .on : .off
             return true
         case #selector(toggleTranslation(_:)):
-            item.state = pdfView.translationOn ? .on : .off
+            item.state = translationPanelOpen ? .on : .off
             return true
         case #selector(toggleMarks(_:)):
             item.state = pdfView.marksVisible ? .on : .off
