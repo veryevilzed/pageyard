@@ -1,0 +1,10 @@
+.build/
+build/
+release/
+vendor/
+node_modules/
+.DS_Store
+
+# локальные настройки инструмента релиза (без секретов)
+.release.json
+.claude/

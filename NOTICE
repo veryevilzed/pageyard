@@ -1,0 +1,14 @@
+PageYard
+Copyright 2026 Dmitry Vysochin
+
+The PageYard source code is licensed under the Apache License, Version 2.0
+(see LICENSE).
+
+Binary builds of PageYard include MuPDF (https://mupdf.com), Copyright Artifex
+Software, Inc., licensed under the GNU Affero General Public License v3.0
+(see MuPDF-AGPL-3.0.txt in the application bundle, Contents/Resources/Licenses).
+MuPDF is used to remove original text from pages when it is edited or erased.
+Its complete source code is available at https://mupdf.com/releases and is
+built for PageYard by Scripts/build_mupdf.sh; the PageYard source code that
+links it is available at https://github.com/veryevilzed/pageyard. A binary
+distribution of PageYard is therefore offered under the terms of the AGPL-3.0.

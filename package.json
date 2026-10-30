@@ -1,0 +1,14 @@
+{
+  "name": "pageyard",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Просмотр, заполнение и редактирование PDF для macOS",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "./Scripts/build_app.sh",
+    "dmg": "./Scripts/build_app.sh && ./Scripts/make_dmg.sh build/PageYard.app build/PageYard.dmg",
+    "selftest": "./Scripts/build_app.sh && build/PageYard.app/Contents/MacOS/PageYard --selftest build/selftest",
+    "release": "node Scripts/release.mjs"
+  }
+}
