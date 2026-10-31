@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/veryevilzed/pageyard/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/veryevilzed/pageyard?label=скачать&color=dc2f3c"></a>
+  <a href="https://github.com/veryevilzed/pageyard/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/veryevilzed/pageyard?label=%D1%81%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C&color=dc2f3c"></a>
   <img alt="macOS" src="https://img.shields.io/badge/macOS-13%2B-black?logo=apple">
   <img alt="Swift" src="https://img.shields.io/badge/Swift-AppKit%20%2B%20PDFKit-F05138?logo=swift&logoColor=white">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue">
