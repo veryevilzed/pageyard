@@ -1,7 +1,27 @@
-# PageYard
+<p align="center">
+  <img src="docs/icon.png" width="96" alt="PageYard">
+</p>
 
-Просмотр, заполнение и редактирование PDF на macOS. Заполняет формы, в которых нет полей, ставит
-подписи и отметки, правит текст прямо в документе, собирает PDF из страниц, картинок и документов.
+<h1 align="center">PageYard</h1>
+
+<p align="center">
+  <b>Просмотр, заполнение и редактирование PDF на macOS</b><br>
+  формы без полей · подписи и отметки · правка текста · сборка PDF · перевод
+</p>
+
+<p align="center">
+  <a href="https://github.com/veryevilzed/pageyard/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/veryevilzed/pageyard?label=скачать&color=dc2f3c"></a>
+  <img alt="macOS" src="https://img.shields.io/badge/macOS-13%2B-black?logo=apple">
+  <img alt="Swift" src="https://img.shields.io/badge/Swift-AppKit%20%2B%20PDFKit-F05138?logo=swift&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue">
+</p>
+
+> **English:** PageYard is a macOS PDF viewer and editor: fill in forms that have no fields,
+> add signatures and check marks, edit the document's own text, build PDFs from pages, images
+> and office documents, and translate pages with Claude or OpenAI.
+
+Заполняет формы, в которых нет полей, ставит подписи и отметки, правит текст прямо в документе,
+собирает PDF из страниц, картинок и документов.
 
 ![Заполнение формы без полей: найденные линии, ячейки и квадратики подсвечены](docs/screenshots/fill.png)
 
