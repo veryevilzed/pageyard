@@ -350,18 +350,32 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
         overlays.object(forKey: page)?.needsDisplay = true
     }
 
+    /// Translations already received, by language pair and source text: text
+    /// translated once (and later hidden or re-selected) doesn't go to the network again.
+    private var translationCache: [String: String] = [:]
+
+    private static func cacheKey(_ source: String, from: String, to: String) -> String {
+        "\(from)>\(to)|" + source.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
     func translate(page: PDFPage, area: CGRect?) {
-        let key = ObjectIdentifier(page)
         let blocks = PageTextBlocks.blocks(on: page, in: area)
         guard !blocks.isEmpty else {
             onTranslationStatus?(area == nil ? "На странице нет текста для перевода (скан? — нужен текстовый слой)" : "В рамке нет текста")
             return
         }
-        let job = UUID()
-        pending.append((job, page, blocks.map(\.rect)))
-        updatePulse()
-        onTranslationStatus?("Перевод: \(blocks.count) блоков…")
         let from = TranslationSettings.sourceLanguage, to = TranslationSettings.targetLanguage
+        let missing = blocks.filter { translationCache[Self.cacheKey($0.source, from: from, to: to)] == nil }
+        guard !missing.isEmpty else {
+            for b in blocks { b.text = translationCache[Self.cacheKey(b.source, from: from, to: to)] }
+            show(blocks, on: page, area: area)
+            onTranslationStatus?(nil)
+            return
+        }
+        let job = UUID()
+        pending.append((job, page, missing.map(\.rect)))
+        updatePulse()
+        onTranslationStatus?("Перевод: \(missing.count) блоков…")
         Task { @MainActor in
             defer {
                 self.pending.removeAll { $0.id == job }
@@ -370,20 +384,29 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
                 if self.pending.isEmpty { self.onTranslationStatus?(nil) }
             }
             do {
-                let out = try await TranslationService.translate(blocks.map(\.source), from: from, to: to)
-                for (block, text) in zip(blocks, out) {
-                    block.text = text
-                    block.background = BackgroundSampler.color(on: page, around: block.rect.insetBy(dx: -2, dy: -2))
-                    block.fit()
+                let out = try await TranslationService.translate(missing.map(\.source), from: from, to: to)
+                for (block, text) in zip(missing, out) {
+                    self.translationCache[Self.cacheKey(block.source, from: from, to: to)] = text
                 }
-                var list = self.translations[key] ?? []
-                if let area { list.removeAll { $0.rect.intersects(area) } } else { list = [] }
-                self.translations[key] = list + blocks
-                self.overlays.object(forKey: page)?.needsDisplay = true
+                for b in blocks { b.text = self.translationCache[Self.cacheKey(b.source, from: from, to: to)] }
+                self.show(blocks.filter { $0.text != nil }, on: page, area: area)
             } catch {
                 self.onTranslationError?(error.localizedDescription)
             }
         }
+    }
+
+    /// Puts translated `blocks` on the page in place of what was there in `area`.
+    private func show(_ blocks: [TranslatedBlock], on page: PDFPage, area: CGRect?) {
+        let key = ObjectIdentifier(page)
+        for block in blocks {
+            block.background = BackgroundSampler.color(on: page, around: block.rect.insetBy(dx: -2, dy: -2))
+            block.fit()
+        }
+        var list = translations[key] ?? []
+        if let area { list.removeAll { $0.rect.intersects(area) } } else { list = [] }
+        translations[key] = list + blocks
+        overlays.object(forKey: page)?.needsDisplay = true
     }
 
     /// Diagnostics: show `blocks` as the page's translation without a network call.
@@ -463,27 +486,37 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
 
     // MARK: - Placement (shared by UI and self-test)
 
-    func makeTextBox(on page: PDFPage, at p: CGPoint, snap: Bool) -> TextBoxAnnotation {
+    /// `fitField`: the box takes the whole detected line / cell — it starts at
+    /// its left edge and wraps at its right one (double-click on a field).
+    func makeTextBox(on page: PDFPage, at p: CGPoint, snap: Bool, fitField: Bool = false) -> TextBoxAnnotation {
         let fields = snap ? detector.fields(on: page) : []
         var size = fontSize
         var x = p.x
+        var field: (minX: CGFloat, maxX: CGFloat)?
         let baseline: CGFloat
         if let box = FieldDetector.box(containing: p, in: fields, kinds: [.box]) {
             size = min(size, box.height * 0.7)
             let f = NSFont.defaultFill(size)
             x = box.minX + 3
             baseline = box.midY - (f.ascender + f.descender) / 2
+            field = (box.minX + 3, box.maxX - 3)
         } else if let line = FieldDetector.line(near: p, in: fields) {
-            x = max(p.x, line.minX + 1)
+            x = fitField ? line.minX + 2 : max(p.x, line.minX + 1)
             baseline = line.maxY + 3
+            field = (line.minX + 2, line.maxX - 2)
         } else {
             let f = NSFont.defaultFill(size)
             baseline = p.y - (f.ascender + f.descender) / 2
         }
         let font = NSFont.defaultFill(size)
         let top = baseline + TextBoxAnnotation.padding + font.ascender
-        return TextBoxAnnotation(text: "", font: font, color: textColor,
-                                 topLeft: CGPoint(x: x - TextBoxAnnotation.padding, y: top))
+        let tb = TextBoxAnnotation(text: "", font: font, color: textColor,
+                                   topLeft: CGPoint(x: x - TextBoxAnnotation.padding, y: top))
+        if fitField, let field, field.maxX - x > 20 {
+            tb.wrapWidth = field.maxX - x + 2 * TextBoxAnnotation.padding
+            tb.fit()
+        }
+        return tb
     }
 
     func makeMark(_ kind: MarkKind, on page: PDFPage, at p: CGPoint, snap: Bool) -> MarkAnnotation {
@@ -579,6 +612,15 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
             || FieldDetector.line(near: p, in: fields) != nil
     }
 
+    /// A text box sized to the field under `p` (Shift: free, at the click point).
+    private func startFilling(_ page: PDFPage, at p: CGPoint, event: NSEvent) {
+        clearSelection()
+        let free = event.modifierFlags.contains(.shift)
+        let tb = makeTextBox(on: page, at: p, snap: !free, fitField: !free)
+        page.addAnnotation(tb)
+        beginEditing(tb, isNew: true)
+    }
+
     private func isOnHandle(_ a: EditableAnnotation, viewPoint vp: CGPoint) -> Bool {
         guard let page = a.page else { return false }
         let corner = convert(CGPoint(x: a.bounds.maxX, y: a.bounds.minY), from: page)
@@ -595,6 +637,13 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
            event.modifierFlags.contains(.option) || translationBlocks(on: page).contains(where: { $0.textRect.insetBy(dx: -3, dy: -2).contains(p) }) {
             selected = nil
             drag = .translateArea(page, p)
+            return
+        }
+        // Double-click on a detected line / cell while viewing: start filling it.
+        if mode == .view, event.clickCount >= 2, let (page, p, _) = locate(event),
+           page.annotation(at: p)?.type != "Widget", detectedFieldAt(p, on: page) {
+            mode = .fill
+            startFilling(page, at: p, event: event)
             return
         }
         guard mode != .view, let (page, p, vp) = locate(event) else {
@@ -631,11 +680,9 @@ final class EditorPDFView: PDFView, NSTextViewDelegate, PDFPageOverlayViewProvid
         switch tool {
         case .select:
             // Double-click on a detected line / cell starts typing there.
-            if event.clickCount >= 2, detectedFieldAt(p, on: page) {
-                clearSelection()
-                let tb = makeTextBox(on: page, at: p, snap: true)
-                page.addAnnotation(tb)
-                beginEditing(tb, isNew: true)
+            // With Shift — exactly where clicked.
+            if event.clickCount >= 2, event.modifierFlags.contains(.shift) || detectedFieldAt(p, on: page) {
+                startFilling(page, at: p, event: event)
                 return
             }
             super.mouseDown(with: event)

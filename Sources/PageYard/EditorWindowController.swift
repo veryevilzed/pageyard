@@ -7,6 +7,31 @@ private extension NSToolbarItem.Identifier {
     static let marks = Self("marks")
     static let translate = Self("translate")
     static let zoom = Self("zoom")
+    static let layout = Self("layout")
+}
+
+/// How pages are laid out: one column or spreads of two (like a book / scans of spreads).
+enum PageLayout: String, CaseIterable {
+    case single, twoUp, auto
+
+    var title: String {
+        switch self {
+        case .single: "Одна страница"
+        case .twoUp: "По две страницы"
+        case .auto: "По две при уменьшении"
+        }
+    }
+
+    static var saved: PageLayout {
+        get { UserDefaults.standard.string(forKey: "pageLayout").flatMap(PageLayout.init(rawValue:)) ?? .single }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "pageLayout") }
+    }
+
+    /// Spreads start with page 2 (page 1 alone, as a book cover).
+    static var pairsFromSecond: Bool {
+        get { UserDefaults.standard.bool(forKey: "pairsFromSecond") }
+        set { UserDefaults.standard.set(newValue, forKey: "pairsFromSecond") }
+    }
 }
 
 /// Document window: a fixed top toolbar (pages, mode, markers, zoom) and a
@@ -45,7 +70,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1150, height: 840),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
-        window.minSize = NSSize(width: 760, height: 450)
+        window.minSize = NSSize(width: 560, height: 420)
         super.init(window: window)
         window.delegate = self
         shouldCascadeWindows = true
@@ -75,7 +100,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         toolbar.centeredItemIdentifiers = [.mode]
         window.toolbar = toolbar
         window.toolbarStyle = .unified
-        window.center()
+        // Open big: the full screen height, the page fitted to the width.
+        if let screen = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame {
+            let width = min(screen.width, max(1150, screen.height * 1.25))
+            window.setFrame(NSRect(x: screen.midX - width / 2, y: screen.minY, width: width, height: screen.height), display: false)
+        } else {
+            window.center()
+        }
         // Keyboard focus starts on the page (tool shortcuts), not the font size box.
         window.initialFirstResponder = pdfView
 
@@ -91,6 +122,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         let saved = UserDefaults.standard.object(forKey: "editorMode") as? Int
         pdfView.mode = saved.flatMap(EditorMode.init(rawValue:)) ?? .fill
         editorModeChanged(pdfView.mode)
+        applyPageLayout()
     }
 
     required init?(coder: NSCoder) { nil }
@@ -174,6 +206,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
 
     func windowDidResize(_ notification: Notification) {
         relayoutRows()
+        updateAutoLayout()
     }
 
     // MARK: - Translation bar
@@ -184,6 +217,9 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         translationBar.blendingMode = .withinWindow
         translationBar.autoresizingMask = [.width, .minYMargin]
         translationBar.isHidden = true
+        // A real width from the start: with a zero frame its autoresizing margin
+        // would demand a window ~1150 pt wider than the bar's contents.
+        translationBar.frame = NSRect(x: 0, y: 0, width: root.bounds.width, height: Self.translationBarHeight)
         root.addSubview(translationBar)
         let line = NSBox(frame: NSRect(x: 0, y: 0, width: 4000, height: 1))
         line.boxType = .separator
@@ -239,7 +275,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         stack.spacing = 8
         stack.setCustomSpacing(16, after: trSwitch)
         stack.setCustomSpacing(16, after: trTarget)
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        Self.letShrink(stack, dropping: [trStatus, settings, bake, clear, again])
         translationBar.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: translationBar.leadingAnchor, constant: 12),
@@ -341,6 +377,17 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             ?? NSImage(systemSymbolName: "questionmark", accessibilityDescription: label)!
     }
 
+    /// A bar's controls must not set the window's minimum width: when it gets
+    /// narrow, `dropping` (first ones first) are hidden and the rest is clipped.
+    private static func letShrink(_ stack: NSStackView, dropping: [NSView]) {
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.setClippingResistancePriority(.defaultLow, for: .horizontal)
+        stack.detachesHiddenViews = true
+        for (i, v) in dropping.enumerated() {
+            stack.setVisibilityPriority(NSStackView.VisibilityPriority(rawValue: Float(100 + 50 * i)), for: v)
+        }
+    }
+
     private func separator() -> NSView {
         let b = NSBox()
         b.boxType = .separator
@@ -403,7 +450,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
         stack.setCustomSpacing(14, after: colorWell)
         stack.setCustomSpacing(14, after: eraseCheck)
         stack.setCustomSpacing(16, after: hintsButton)
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        Self.letShrink(stack, dropping: [hintLabel, hintsButton, signatureButton, eraseCheck])
         strip.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: strip.leadingAnchor, constant: 12),
@@ -434,7 +481,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     // MARK: - Top toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.sidebar, .flexibleSpace, .mode, .flexibleSpace, .translate, .marks, .zoom]
+        [.sidebar, .flexibleSpace, .mode, .flexibleSpace, .translate, .marks, .layout, .zoom]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -495,6 +542,16 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             stack.spacing = 4
             item.view = stack
             item.label = "Масштаб"
+        case .layout:
+            let popup = NSPopUpButton(frame: .zero, pullsDown: true)
+            popup.bezelStyle = .texturedRounded
+            popup.addItem(withTitle: "")
+            popup.item(at: 0)?.image = symbol("book", "Разворот")
+            popup.menu?.addItem(.separator())
+            for item in Self.layoutMenuItems() { popup.menu?.addItem(item) }
+            popup.toolTip = "Страницы по одной или по две рядом"
+            item.view = popup
+            item.label = "Разворот"
         case .sidebar:
             let b = NSButton(image: symbol("sidebar.left", "Страницы"), target: self, action: #selector(toggleThumbnails(_:)))
             b.bezelStyle = .texturedRounded
@@ -531,6 +588,73 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     @objc private func scaleChanged() {
         let pct = Int((pdfView.scaleFactor * 100).rounded())
         zoomPopup?.item(at: 0)?.title = pdfView.autoScales ? "\(pct)% ↔" : "\(pct)%"
+        updateAutoLayout()
+    }
+
+    // MARK: - Page layout
+
+    /// Items for the toolbar popup and the Вид menu (validated by `validateMenuItem`).
+    static func layoutMenuItems() -> [NSMenuItem] {
+        var items = PageLayout.allCases.enumerated().map { i, l in
+            let mi = NSMenuItem(title: l.title, action: #selector(pageLayoutAction(_:)), keyEquivalent: "")
+            mi.tag = i
+            return mi
+        }
+        items.append(.separator())
+        for (title, tag) in [("Пары с 1-й страницы: 1–2, 3–4", 0), ("Пары со 2-й страницы: 1, 2–3", 1)] {
+            let mi = NSMenuItem(title: title, action: #selector(pairsStartAction(_:)), keyEquivalent: "")
+            mi.tag = tag
+            items.append(mi)
+        }
+        return items
+    }
+
+    private var pageLayout = PageLayout.saved
+
+    @objc func pageLayoutAction(_ sender: NSMenuItem) {
+        setPageLayout(PageLayout.allCases[sender.tag])
+    }
+
+    @objc func pairsStartAction(_ sender: NSMenuItem) {
+        PageLayout.pairsFromSecond = sender.tag == 1
+        if pageLayout == .single { setPageLayout(.twoUp) } else { applyPageLayout() }
+    }
+
+    func setPageLayout(_ layout: PageLayout) {
+        pageLayout = layout
+        PageLayout.saved = layout
+        applyPageLayout()
+    }
+
+    private func applyPageLayout() {
+        let page = pdfView.currentPage
+        pdfView.displaysAsBook = PageLayout.pairsFromSecond
+        switch pageLayout {
+        case .single: setDisplayMode(.singlePageContinuous)
+        case .twoUp: setDisplayMode(.twoUpContinuous)
+        case .auto: updateAutoLayout(force: true)
+        }
+        if let page { pdfView.go(to: page) }
+    }
+
+    private func setDisplayMode(_ mode: PDFDisplayMode) {
+        guard pdfView.displayMode != mode else { return }
+        let page = pdfView.currentPage
+        let scale = pdfView.scaleFactor, auto = pdfView.autoScales
+        pdfView.displayMode = mode
+        if !auto { pdfView.scaleFactor = scale }
+        if let page { pdfView.go(to: page) }
+    }
+
+    /// «По две при уменьшении»: two pages side by side as soon as they fit the
+    /// width at the current zoom; one page while it is fitted to the window.
+    private func updateAutoLayout(force: Bool = false) {
+        guard pageLayout == .auto, let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else { return }
+        var size = page.bounds(for: pdfView.displayBox).size
+        if page.rotation % 180 != 0 { size = CGSize(width: size.height, height: size.width) }
+        let room = pdfView.bounds.width - 40
+        let fitsTwo = !pdfView.autoScales && 2 * size.width * pdfView.scaleFactor + 20 <= room
+        setDisplayMode(fitsTwo ? .twoUpContinuous : .singlePageContinuous)
     }
 
     // MARK: - Actions
@@ -878,6 +1002,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
             return true
         case #selector(toggleMarks(_:)):
             item.state = pdfView.marksVisible ? .on : .off
+            return true
+        case #selector(pageLayoutAction(_:)):
+            item.state = PageLayout.allCases[item.tag] == pageLayout ? .on : .off
+            return true
+        case #selector(pairsStartAction(_:)):
+            item.state = pageLayout != .single && (item.tag == 1) == PageLayout.pairsFromSecond ? .on : .off
             return true
         case #selector(exportPageImages(_:)), #selector(exportCurrentPageImage(_:)), #selector(exportWithoutAnnotations(_:)):
             return (pdfView.document?.pageCount ?? 0) > 0

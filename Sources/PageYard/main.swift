@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ScreenshotTour.scheduleIfRequested()
         ZoomTest.scheduleIfRequested()
         TranslationTest.scheduleIfRequested()
+        LayoutTest.scheduleIfRequested()
         DispatchQueue.main.async {
             if NSDocumentController.shared.documents.isEmpty, ProcessInfo.processInfo.environment["PAGEYARD_SCREENSHOTS"] == nil,
                ProcessInfo.processInfo.environment["PAGEYARD_ZOOMTEST"] == nil,
@@ -133,6 +134,9 @@ enum MainMenu {
             item("По размеру окна", #selector(EditorWindowController.fitAction(_:)), "9"),
             .separator(),
             item("Панель страниц", #selector(EditorWindowController.toggleThumbnails(_:)), "s", [.command, .option]),
+            .separator(),
+        ] + EditorWindowController.layoutMenuItems() + [
+            .separator(),
             item("Показывать пометки маркером", #selector(EditorWindowController.toggleMarks(_:)), "m", [.command, .shift]),
             item("Перевод страницы", #selector(EditorWindowController.toggleTranslation(_:)), "t", [.command, .shift]),
         ])

@@ -477,6 +477,10 @@ enum TranslationTest {
                             ScreenshotTour.capture(window, to: out.appendingPathComponent("selection.png"))
                             view.clearTranslation(on: page)
                             print("after «Убрать перевод»: blocks \(view.translationBlocks(on: page).count)")
+                            // The same text again: from the cache, no request, no waiting.
+                            view.setCurrentSelection(page.selection(for: CGRect(x: 50, y: 640, width: 495, height: 28)), animate: false)
+                            view.translateSelection()
+                            print("re-selection from cache: blocks \(view.translationBlocks(on: page).count), pending \(view.pendingRects(on: page).count)")
                             fflush(stdout)
                             exit(0)
                         }
@@ -528,6 +532,68 @@ enum TranslationTest {
                 RunLoop.main.run(until: Date().addingTimeInterval(0.8))
                 if let w = SettingsWindowController.shared.window {
                     ScreenshotTour.capture(w, to: out.appendingPathComponent("settings.png"))
+                }
+                fflush(stdout)
+                exit(0)
+            }
+        }
+    }
+}
+
+/// `PAGEYARD_LAYOUTTEST=<dir>`: initial zoom, narrowest window, two-page layouts.
+enum LayoutTest {
+    static func scheduleIfRequested() {
+        guard let dir = ProcessInfo.processInfo.environment["PAGEYARD_LAYOUTTEST"] else { return }
+        let out = URL(fileURLWithPath: dir)
+        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("layouttest.pdf")
+        try? ScreenshotTour.demoFormData().write(to: file)
+        NSDocumentController.shared.openDocument(withContentsOf: file, display: true) { doc, _, _ in
+            guard let wc = doc?.windowControllers.first as? EditorWindowController, let window = wc.window else { exit(1) }
+            let view = wc.pdfView
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                print("open: window \(window.frame.integral.size), scale \(view.scaleFactor), auto \(view.autoScales)")
+                ScreenshotTour.capture(window, to: out.appendingPathComponent("open.png"))
+                for (i, w) in [500, 500, 700, 500].enumerated() {
+                    if i == 3 { wc.toggleTranslation(nil) }
+                    window.setFrame(NSRect(x: 80, y: 80, width: CGFloat(w), height: 600), display: true)
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.7))
+                    print("narrow \(i)\(i == 3 ? " +translation" : ""): asked \(w) → \(window.frame.width), fitting \(window.contentView!.fittingSize.width)")
+                }
+                ScreenshotTour.capture(window, to: out.appendingPathComponent("narrow.png"))
+                wc.toggleTranslation(nil)
+                window.setFrame(NSRect(x: 80, y: 80, width: 1300, height: 900), display: true)
+                for layout in PageLayout.allCases {
+                    wc.setPageLayout(layout)
+                    view.autoScales = false
+                    view.scaleFactor = 0.6
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+                    print("\(layout): mode \(view.displayMode.rawValue), asBook \(view.displaysAsBook)")
+                    ScreenshotTour.capture(window, to: out.appendingPathComponent("layout-\(layout.rawValue).png"))
+                }
+                wc.setPageLayout(.single)
+                PageLayout.saved = .single
+                // Double-click in the middle of a fill-in line: the box starts at the line.
+                view.autoScales = true
+                if let page = view.document?.page(at: 0) {
+                    let lines = view.detector.fields(on: page).filter { $0.kind == .line }.map(\.rect).sorted { $0.width > $1.width }
+                    for (m, shift) in [(EditorMode.view, false), (.fill, false), (.fill, true)] {
+                        guard let line = lines.first else { break }
+                        view.mode = m
+                        view.go(to: line, on: page)
+                        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+                        let p = CGPoint(x: line.midX, y: line.maxY + 6)
+                        let loc = view.convert(view.convert(p, from: page), to: nil)
+                        for (type, n) in [(NSEvent.EventType.leftMouseDown, 2), (.leftMouseUp, 2)] {
+                            let e = NSEvent.mouseEvent(with: type, location: loc, modifierFlags: shift ? [.shift] : [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                       windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: n, pressure: 1)!
+                            type == .leftMouseDown ? view.mouseDown(with: e) : view.mouseUp(with: e)
+                        }
+                        let tb = page.annotations.compactMap { $0 as? TextBoxAnnotation }.last
+                        print("dbl-click \(m)\(shift ? "+shift" : ""): line x \(Int(line.minX))…\(Int(line.maxX)), click x \(Int(p.x)) → mode \(view.mode), box \(tb.map { "x \(Int($0.bounds.minX))…\(Int($0.bounds.maxX))" } ?? "none")")
+                        view.finishEditing()
+                        if let tb { page.removeAnnotation(tb) }
+                    }
                 }
                 fflush(stdout)
                 exit(0)
