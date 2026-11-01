@@ -3,6 +3,13 @@
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 Раздел текущей версии `npm run release` берёт в описание релиза на GitHub.
 
+## [Unreleased]
+
+### Документация
+- Шапка README как у PixelYard: иконка, описание, бейджи (последний релиз, macOS, Swift, лицензия),
+  абзац на английском
+- Как сделать PageYard программой для PDF по умолчанию
+
 ## [0.1.8] — 2026-10-31
 
 ### Добавлено
