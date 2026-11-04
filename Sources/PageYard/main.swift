@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ZoomTest.scheduleIfRequested()
         TranslationTest.scheduleIfRequested()
         LayoutTest.scheduleIfRequested()
+        ScanTest.scheduleIfRequested()
         DispatchQueue.main.async {
             if NSDocumentController.shared.documents.isEmpty, ProcessInfo.processInfo.environment["PAGEYARD_SCREENSHOTS"] == nil,
                ProcessInfo.processInfo.environment["PAGEYARD_ZOOMTEST"] == nil,
@@ -90,6 +91,7 @@ enum MainMenu {
             .separator(),
             item("Вставить страницы из файла…", #selector(EditorWindowController.insertPagesFromFile(_:)), "i", [.command, .shift]),
             item("Вставить пустую страницу", #selector(EditorWindowController.insertBlankPage(_:))),
+            item("Сканировать…", #selector(EditorWindowController.scanPages(_:)), "k", [.command, .shift]),
             {
                 let i = NSMenuItem(title: "Импорт с iPhone или iPad", action: nil, keyEquivalent: "")
                 i.identifier = NSMenuItem.importFromDeviceIdentifier

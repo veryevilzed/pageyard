@@ -757,6 +757,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSTool
     @objc func insertPagesFromFile(_ sender: Any?) { sidebar.insertFromPanel(sender) }
     @objc func insertBlankPage(_ sender: Any?) { sidebar.insertBlankPage() }
 
+    /// Scanner sheet; the scanned pages go in as one group after the current page.
+    @objc func scanPages(_ sender: Any?) {
+        guard let window else { return }
+        ScanWindowController.present(on: window) { [weak self] url in
+            guard let self else { return }
+            self.sidebar.importFiles([url], atTop: self.sidebar.insertionIndexAfterCurrent())
+        }
+    }
+
     @objc func exportPageImages(_ sender: Any?) {
         exportImages(of: nil)
     }

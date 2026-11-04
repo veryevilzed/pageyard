@@ -34,13 +34,21 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.8</string>
+	<string>0.1.10</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>PageYard ищет сетевые сканеры, чтобы отсканировать страницы в документ.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_scanner._tcp</string>
+		<string>_uscan._tcp</string>
+		<string>_uscans._tcp</string>
+	</array>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>PageYard просит Pages и Numbers сохранить документ Word или таблицу Excel в PDF, чтобы вставить их страницы.</string>
 	<key>NSHighResolutionCapable</key>

@@ -601,3 +601,97 @@ enum LayoutTest {
         }
     }
 }
+
+/// `PAGEYARD_SCANTEST=<dir>`: scanner sheet against a real scanner (no scan is
+/// started), then fake pages (text / blank) → skip blank → PDF → inserted group.
+enum ScanTest {
+    static func scheduleIfRequested() {
+        guard let dir = ProcessInfo.processInfo.environment["PAGEYARD_SCANTEST"] else { return }
+        let out = URL(fileURLWithPath: dir)
+        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("scantest.pdf")
+        try? ScreenshotTour.demoFormData().write(to: file)
+        NSDocumentController.shared.openDocument(withContentsOf: file, display: true) { doc, _, _ in
+            guard let wc = doc?.windowControllers.first as? EditorWindowController, let window = wc.window,
+                  let pdf = wc.pdfView.document else { exit(1) }
+            let before = pdf.pageCount
+            wc.scanPages(nil)
+            guard let sheet = ScanWindowController.controller(for: window) else { print("no sheet"); exit(1) }
+            let started = Date()
+            func poll() {
+                if sheet.isReady || Date().timeIntervalSince(started) > 30 {
+                    print(String(format: "after %.1fs: ", Date().timeIntervalSince(started)) + sheet.debugState)
+                    ScreenshotTour.capture(sheet.window!, to: out.appendingPathComponent("scan-sheet.png"))
+                    if ProcessInfo.processInfo.environment["PAGEYARD_SCANREAL"] == "preview" {
+                        let t = Date()
+                        var step = 0
+                        func wait() {
+                            if !sheet.isBusy || Date().timeIntervalSince(t) > 150 {
+                                print(String(format: "step %d at %.1fs: ", step, Date().timeIntervalSince(t)) + sheet.debugState)
+                                ScreenshotTour.capture(sheet.window!, to: out.appendingPathComponent("scan-step\(step).png"))
+                                step += 1
+                                if step == 1 { sheet.debugFail() } else { fflush(stdout); exit(0) }
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: wait)
+                        }
+                        sheet.debugPreview()
+                        wait()
+                        return
+                    }
+                    if ProcessInfo.processInfo.environment["PAGEYARD_SCANREAL"] != nil {
+                        sheet.debugScan()
+                        let t = Date()
+                        func wait() {
+                            if !sheet.isScanning || Date().timeIntervalSince(t) > 120 {
+                                print(String(format: "real scan %.1fs: ", Date().timeIntervalSince(t)) + sheet.debugState)
+                                ScreenshotTour.capture(sheet.window!, to: out.appendingPathComponent("scan-real.png"))
+                                fflush(stdout)
+                                exit(0)
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: wait)
+                        }
+                        wait()
+                        return
+                    }
+                    // A "scanned" text page, a blank one (light noise + dark border) and another text page.
+                    let files = [fake(text: true, out: out, name: "p1"), fake(text: false, out: out, name: "p2"), fake(text: true, out: out, name: "p3")]
+                    sheet.debugDeliver(files)
+                    print("after pass: " + sheet.debugState)
+                    sheet.debugInsert()
+                    RunLoop.main.run(until: Date().addingTimeInterval(1))
+                    let added = (before..<pdf.pageCount).compactMap { pdf.page(at: $0) ?? nil }
+                    print("pages \(before) → \(pdf.pageCount); sizes \(added.map { $0.bounds(for: .mediaBox).size })")
+                    fflush(stdout)
+                    exit(0)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: poll)
+            }
+            poll()
+        }
+    }
+
+    /// A 300-dpi A4 JPEG like a scanner would deliver.
+    static func fake(text: Bool, out: URL, name: String) -> URL {
+        let w = 2480, h = 3508
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+        ctx.setFillColor(gray: 0.96, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.setFillColor(gray: 0.2, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: 60, height: h))   // scanner shadow at the edge
+        var rng = SystemRandomNumberGenerator()
+        for _ in 0..<4000 {
+            ctx.setFillColor(gray: CGFloat.random(in: 0.85...0.95, using: &rng), alpha: 1)
+            ctx.fill(CGRect(x: Int.random(in: 0..<w, using: &rng), y: Int.random(in: 0..<h, using: &rng), width: 3, height: 3))
+        }
+        if text {
+            ctx.setFillColor(gray: 0.1, alpha: 1)
+            for line in 0..<40 { ctx.fill(CGRect(x: 300, y: 3000 - line * 60, width: 1600 - (line % 5) * 150, height: 22)) }
+        }
+        let url = out.appendingPathComponent("\(name).jpg")
+        let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.jpeg" as CFString, 1, nil)!
+        CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
+        CGImageDestinationFinalize(dest)
+        return url
+    }
+}

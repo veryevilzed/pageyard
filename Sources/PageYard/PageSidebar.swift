@@ -640,6 +640,8 @@ final class PageSidebar: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate,
         menu.addItem(sizeSubmenu("Пустая страница", action: #selector(addBlankSized(_:)), includeCurrent: true))
         menu.addItem(sizeSubmenu("Лист-макет для картинок", action: #selector(addSheetSized(_:)), includeCurrent: false))
         menu.addItem(.separator())
+        // Nil target: handled by the window controller.
+        menu.addItem(NSMenuItem(title: "Со сканера…", action: #selector(EditorWindowController.scanPages(_:)), keyEquivalent: ""))
         for item in ContinuityImport.menu().items {
             menu.addItem(item.copy() as! NSMenuItem)
         }
