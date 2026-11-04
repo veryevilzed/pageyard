@@ -3,7 +3,7 @@
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 Раздел текущей версии `npm run release` берёт в описание релиза на GitHub.
 
-## [Unreleased]
+## [0.1.10] — 2026-11-04
 
 ### Добавлено
 - Сканирование (Файл → Сканировать…, ⌘⇧K, или «+ Добавить» → «Со сканера…»): USB- и сетевые
@@ -87,6 +87,7 @@
 - Universal (Apple Silicon и Intel), macOS 13+, MuPDF собирается из исходников статически
 - Подписанные и нотаризованные сборки: `npm run release`
 
+[0.1.10]: https://github.com/veryevilzed/pageyard/releases/tag/v0.1.10
 [0.1.8]: https://github.com/veryevilzed/pageyard/releases/tag/v0.1.8
 [0.1.5]: https://github.com/veryevilzed/pageyard/releases/tag/v0.1.5
 [0.1.0]: https://github.com/veryevilzed/pageyard/releases/tag/v0.1.0
